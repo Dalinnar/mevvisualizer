@@ -110,9 +110,20 @@ function unpackBlockStates(regionData, paletteSize, width, height, depth) {
 // ================= REGION =================
 function create3DBlocks(region) {
   const size = region.get("Size");
-  const width = Math.abs(Number(size.get("x").value ?? size.get("x")));
-  const height = Math.abs(Number(size.get("y").value ?? size.get("y")));
-  const depth = Math.abs(Number(size.get("z").value ?? size.get("z")));
+  const sx = Number(size.get("x").value ?? size.get("x"));
+  const sy = Number(size.get("y").value ?? size.get("y"));
+  const sz = Number(size.get("z").value ?? size.get("z"));
+
+  // Width/height/depth are always positive for iteration
+  const width = Math.abs(sx);
+  const height = Math.abs(sy);
+  const depth = Math.abs(sz);
+
+  // Position anchor (where this region sits in world space)
+  const pos = region.get("Position");
+  const posX = Number(pos.get("x").value ?? pos.get("x"));
+  const posY = Number(pos.get("y").value ?? pos.get("y"));
+  const posZ = Number(pos.get("z").value ?? pos.get("z"));
 
   const paletteTag = region.get("BlockStatePalette");
   const palette = [];
@@ -148,7 +159,16 @@ function create3DBlocks(region) {
   }
 
   const blockIds = unpackBlockStates(regionData, palette.length, width, height, depth);
-  return { blockIds, palette, width, height, depth };
+
+  // Convert local index → world coordinate, accounting for negative size direction
+  function localToWorld(lx, ly, lz) {
+    const ox = sx >= 0 ? lx : lx + sx + 1;
+    const oy = sy >= 0 ? ly : ly + sy + 1;
+    const oz = sz >= 0 ? lz : lz + sz + 1;
+    return [posX + ox, posY + oy, posZ + oz];
+  }
+
+  return { blockIds, palette, width, height, depth, localToWorld };
 }
 
 // ================= LOAD RESOURCES =================
@@ -266,19 +286,12 @@ async function init() {
 
   function rebuildStructureWithYRange(minY, maxY) {
     if (!fullBlockData || !currentRenderer) return;
-    const { blockIds, palette, width, height, depth } = fullBlockData;
-    const structure = new Structure([width, height, depth]);
+    const { placedBlocks, width, height, depth } = fullBlockData;
 
-    let idx = 0;
-    for (let y = 0; y < height; y++) {
-      for (let z = 0; z < depth; z++) {
-        for (let x = 0; x < width; x++) {
-          const paletteId = blockIds[idx++];
-          const blockEntry = palette[paletteId];
-          if (blockEntry && blockEntry.Name !== 'minecraft:air' && y >= minY && y <= maxY) {
-            structure.addBlock([x, y, z], blockEntry.Name, blockEntry.Properties || {});
-          }
-        }
+    const structure = new Structure([width, height, depth]);
+    for (const { wx, wy, wz, entry } of placedBlocks) {
+      if (wy >= minY && wy <= maxY) {
+        structure.addBlock([wx, wy, wz], entry.Name, entry.Properties || {});
       }
     }
 
@@ -327,50 +340,82 @@ async function init() {
 
     const buffer = await file.arrayBuffer();
     const nbt = deepslate.NbtFile.read(new Uint8Array(buffer));
+
+    // Read EnclosingSize from Metadata
+    const metadata = nbt.root.get("Metadata");
+    const enclosing = metadata.get("EnclosingSize");
+    const totalW = Math.abs(Number(enclosing.get("x").value ?? enclosing.get("x")));
+    const totalH = Math.abs(Number(enclosing.get("y").value ?? enclosing.get("y")));
+    const totalD = Math.abs(Number(enclosing.get("z").value ?? enclosing.get("z")));
+
+    // Collect all blocks across all regions into a flat lookup
     const regions = nbt.root.get("Regions");
-    const region = regions.get(Array.from(regions.keys())[0]);
+    const allBlockIds = [];  // for materials list (unchanged)
+    const allPalette = [];
+    const placedBlocks = []; // [{pos, name, props}]
 
-    const { blockIds, palette, width, height, depth } = create3DBlocks(region);
-    fullBlockData = { blockIds, palette, width, height, depth };
+    for (const regionName of regions.keys()) {
+      const region = regions.get(regionName);
+      const { blockIds, palette, width, height, depth, localToWorld } = create3DBlocks(region);
 
-    const structure = new Structure([width, height, depth]);
+      // Track for materials (append to global palette)
+      const paletteOffset = allPalette.length;
+      allPalette.push(...palette);
+      blockIds.forEach(id => allBlockIds.push(id + paletteOffset));
+
+      let idx = 0;
+      for (let ly = 0; ly < height; ly++) {
+        for (let lz = 0; lz < depth; lz++) {
+          for (let lx = 0; lx < width; lx++) {
+            const paletteId = blockIds[idx++];
+            const blockEntry = palette[paletteId];
+            if (blockEntry && blockEntry.Name !== 'minecraft:air') {
+              const [wx, wy, wz] = localToWorld(lx, ly, lz);
+              placedBlocks.push({ wx, wy, wz, entry: blockEntry });
+            }
+          }
+        }
+      }
+    }
+
+    // Store for slider / materials
+    fullBlockData = {
+      blockIds: allBlockIds,
+      palette: allPalette,
+      width: totalW,
+      height: totalH,
+      depth: totalD,
+      placedBlocks  // used by rebuildStructureWithYRange
+    };
+
+    const structure = new Structure([totalW, totalH, totalD]);
+    for (const { wx, wy, wz, entry } of placedBlocks) {
+      structure.addBlock([wx, wy, wz], entry.Name, entry.Properties || {});
+    }
+
     const renderer = new StructureRenderer(gl, structure, resources);
-    const center = [width / 2, height / 2, depth / 2];
+    const center = [totalW / 2, totalH / 2, totalD / 2];
 
     currentStructure = structure;
     currentRenderer = renderer;
 
     currentCamera = new InteractiveCanvas(canvas, view => {
       renderer.drawStructure(view);
-    }, center, Math.max(...center) * 3);
+    }, center, Math.max(totalW, totalH, totalD) * 2.5);
 
     if (!slider) {
       slider = new DoubleRangeSlider('slider-container', {
         min: 0,
-        max: height - 1,
+        max: totalH - 1,
         currentMin: 0,
-        currentMax: height - 1,
+        currentMax: totalH - 1,
         onChange: (minY, maxY) => rebuildStructureWithYRange(minY, maxY)
       });
     } else {
-      slider.setRange(0, height - 1);
+      slider.setRange(0, totalH - 1);
     }
 
     document.getElementById('slider-container').classList.add('active');
-
-    // Build initial full structure
-    let idx = 0;
-    for (let y = 0; y < height; y++) {
-      for (let z = 0; z < depth; z++) {
-        for (let x = 0; x < width; x++) {
-          const paletteId = blockIds[idx++];
-          const blockEntry = palette[paletteId];
-          if (blockEntry && blockEntry.Name !== 'minecraft:air') {
-            structure.addBlock([x, y, z], blockEntry.Name, blockEntry.Properties || {});
-          }
-        }
-      }
-    }
     renderer.setStructure(structure);
   });
 }
