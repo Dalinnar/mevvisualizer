@@ -314,4 +314,4 @@ function getBlockFlags(name) {
   })
 }
 
-init(); // <-- kick everything off after async loading
+init();
