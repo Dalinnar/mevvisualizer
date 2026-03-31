@@ -171,9 +171,26 @@ Promise.all([
   })
 
   const blockModels = {}
+  // Fix textures for Deepslate
   Object.keys(models).forEach(id => {
-    blockModels['minecraft:' + id] = BlockModel.fromJson(models[id])
-  })
+    const model = models[id];
+
+    if (model.textures) {
+      for (const key in model.textures) {
+        const tex = model.textures[key];
+        // If it's an object with a sprite, replace it with the sprite string
+        if (typeof tex === "object" && tex.sprite) {
+          model.textures[key] = tex.sprite;
+        }
+        // Fallback for invalid types
+        else if (typeof tex !== "string") {
+          model.textures[key] = "#missing";
+        }
+      }
+    }
+
+    blockModels['minecraft:' + id] = BlockModel.fromJson(model);
+  });
 
   Object.values(blockModels).forEach(m => {
     m.flatten({ getBlockModel: id => blockModels[id] })
