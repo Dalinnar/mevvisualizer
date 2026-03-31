@@ -154,24 +154,25 @@ function create3DBlocks(region) {
 // ================= LOAD RESOURCES =================
 const MCMETA = 'https://raw.githubusercontent.com/misode/mcmeta/'
 
-// Load block characteristics JSON for flags
-let blockData = [];
-fetch('./blocklist.json')
-  .then(r => r.json())
-  .then(data => blockData = data)
-  .catch(console.error);
+async function loadBlockData() {
+  const res = await fetch('./blocklist.json');
+  return await res.json();
+}
 
-Promise.all([
-  fetch(`${MCMETA}summary/assets/block_definition/data.min.json`).then(r => r.json()),
-  fetch(`${MCMETA}summary/assets/model/data.min.json`).then(r => r.json()),
-  fetch(`${MCMETA}atlas/all/data.min.json`).then(r => r.json()),
-  new Promise(res => {
-    const img = new Image()
-    img.onload = () => res(img)
-    img.crossOrigin = 'Anonymous'
-    img.src = `${MCMETA}atlas/all/atlas.png`
-  })
-]).then(([blockstates, models, uvMap, atlas]) => {
+async function init() {
+  const blockData = await loadBlockData(); // <-- await ensures loaded
+
+  const [blockstates, models, uvMap, atlas] = await Promise.all([
+    fetch(`${MCMETA}summary/assets/block_definition/data.min.json`).then(r => r.json()),
+    fetch(`${MCMETA}summary/assets/model/data.min.json`).then(r => r.json()),
+    fetch(`${MCMETA}atlas/all/data.min.json`).then(r => r.json()),
+    new Promise(res => {
+      const img = new Image()
+      img.onload = () => res(img)
+      img.crossOrigin = 'Anonymous'
+      img.src = `${MCMETA}atlas/all/atlas.png`
+    })
+  ]);
 
   const blockDefinitions = {}
   Object.keys(blockstates).forEach(id => {
@@ -216,27 +217,19 @@ Promise.all([
 
   // ================= BLOCK FLAG LOGIC =================
   function normalizeName(name) {
-    // handle Identifier objects from Deepslate
     if (typeof name === 'object' && name !== null) {
       if ('path' in name) name = name.path
-      else name = '' // fallback for weird objects
+      else name = ''
     }
-
     if (typeof name !== 'string') return ''
-
-    // remove minecraft: prefix if present (just in case)
     if (name.startsWith('minecraft:')) name = name.slice('minecraft:'.length)
-
     return name.toLowerCase().replace(/\s+/g, '_')
   }
-
 
   const blockMap = {}
   blockData.forEach(block => {
     const mainName = normalizeName(block.block)
     blockMap[mainName] = block
-
-    // normalize variants, whether string or array
     if (block.variants) {
       if (Array.isArray(block.variants)) {
         block.variants.forEach(v => blockMap[normalizeName(v)] = block)
@@ -245,25 +238,29 @@ Promise.all([
       }
     }
   })
-  function getBlockFlags(name) {
-    if (!name) return { opaque: false, semi_transparent: false, self_culling: false }
 
-    const norm = normalizeName(name)
-    const block = blockMap[norm]
-
-    if (!block) {
-      console.log(`[BlockFlags] No match for "${name}" (normalized: "${norm}"), using defaults`)
-      return { opaque: false, semi_transparent: false, self_culling: false }
-    }
-
-    const opaque = block.full_cube === "Yes"
-    const semi_transparent = !opaque && block.luminance === 0
-    const self_culling = opaque
-
-    console.log(`[BlockFlags] Matched "${name}" (normalized: "${norm}"), flags:`, { opaque, semi_transparent, self_culling })
-
-    return { opaque, semi_transparent, self_culling }
+function getBlockFlags(name) {
+  if (!name) {
+    console.log(`[BlockFlags] Called with empty name, using defaults`);
+    return { opaque: false, semi_transparent: false, self_culling: false };
   }
+
+  const norm = normalizeName(name);
+  const block = blockMap[norm];
+
+  if (!block) {
+    console.log(`[BlockFlags] No match for "${name}" (normalized: "${norm}"), using defaults`);
+    return { opaque: false, semi_transparent: false, self_culling: false };
+  }
+
+  const opaque = block.full_cube === "Yes" && !block.transparent;
+  const semi_transparent = !opaque && block.transparent;
+  const self_culling = opaque || block.transparent;
+
+  console.log(`[BlockFlags] Matched "${name}" (normalized: "${norm}"), flags:`, { opaque, semi_transparent, self_culling });
+
+  return { opaque, semi_transparent, self_culling };
+}
 
   const resources = {
     getBlockDefinition: id => blockDefinitions[id.toString()],
@@ -271,7 +268,7 @@ Promise.all([
     getTextureUV: id => textureAtlas.getTextureUV(id),
     getTextureAtlas: () => textureAtlas.getTextureAtlas(),
     getPixelSize: () => textureAtlas.getPixelSize(),
-    getBlockFlags,  // <--- dynamic integration
+    getBlockFlags,
     getBlockProperties: () => null,
     getDefaultBlockProperties: () => null,
   };
@@ -315,4 +312,6 @@ Promise.all([
     }
     renderer.setStructure(structure)
   })
-})
+}
+
+init(); // <-- kick everything off after async loading
