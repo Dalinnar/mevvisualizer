@@ -64,7 +64,7 @@ class InteractiveCanvas {
   }
 }
 
-// ================= UNPACK (32-bit SAFE) =================
+// ================= UNPACK =================
 function unpackBlockStates(regionData, paletteSize, width, height, depth) {
   const nbits = Math.max(2, Math.ceil(Math.log2(paletteSize)));
   const mask = (1 << nbits) - 1;
@@ -154,6 +154,13 @@ function create3DBlocks(region) {
 // ================= LOAD RESOURCES =================
 const MCMETA = 'https://raw.githubusercontent.com/misode/mcmeta/'
 
+// Load block characteristics JSON for flags
+let blockData = [];
+fetch('./blocklist.json')
+  .then(r => r.json())
+  .then(data => blockData = data)
+  .catch(console.error);
+
 Promise.all([
   fetch(`${MCMETA}summary/assets/block_definition/data.min.json`).then(r => r.json()),
   fetch(`${MCMETA}summary/assets/model/data.min.json`).then(r => r.json()),
@@ -165,36 +172,29 @@ Promise.all([
     img.src = `${MCMETA}atlas/all/atlas.png`
   })
 ]).then(([blockstates, models, uvMap, atlas]) => {
+
   const blockDefinitions = {}
   Object.keys(blockstates).forEach(id => {
     blockDefinitions['minecraft:' + id] = BlockDefinition.fromJson(blockstates[id])
   })
 
   const blockModels = {}
-  // Fix textures for Deepslate
   Object.keys(models).forEach(id => {
     const model = models[id];
-
     if (model.textures) {
       for (const key in model.textures) {
         const tex = model.textures[key];
-        // If it's an object with a sprite, replace it with the sprite string
         if (typeof tex === "object" && tex.sprite) {
           model.textures[key] = tex.sprite;
-        }
-        // Fallback for invalid types
-        else if (typeof tex !== "string") {
+        } else if (typeof tex !== "string") {
           model.textures[key] = "#missing";
         }
       }
     }
-
     blockModels['minecraft:' + id] = BlockModel.fromJson(model);
   });
 
-  Object.values(blockModels).forEach(m => {
-    m.flatten({ getBlockModel: id => blockModels[id] })
-  })
+  Object.values(blockModels).forEach(m => m.flatten({ getBlockModel: id => blockModels[id] }))
 
   const atlasCanvas = document.createElement('canvas')
   const size = upperPowerOfTwo(Math.max(atlas.width, atlas.height))
@@ -214,20 +214,64 @@ Promise.all([
 
   const textureAtlas = new TextureAtlas(atlasData, idMap)
 
+  // ================= BLOCK FLAG LOGIC =================
+  function normalizeName(name) {
+    // handle Identifier objects from Deepslate
+    if (typeof name === 'object' && name !== null) {
+      if ('path' in name) name = name.path
+      else name = '' // fallback for weird objects
+    }
+
+    if (typeof name !== 'string') return ''
+
+    // remove minecraft: prefix if present (just in case)
+    if (name.startsWith('minecraft:')) name = name.slice('minecraft:'.length)
+
+    return name.toLowerCase().replace(/\s+/g, '_')
+  }
+
+
+  const blockMap = {}
+  blockData.forEach(block => {
+    const mainName = normalizeName(block.block)
+    blockMap[mainName] = block
+
+    // normalize variants, whether string or array
+    if (block.variants) {
+      if (Array.isArray(block.variants)) {
+        block.variants.forEach(v => blockMap[normalizeName(v)] = block)
+      } else {
+        blockMap[normalizeName(block.variants)] = block
+      }
+    }
+  })
+  function getBlockFlags(name) {
+    if (!name) return { opaque: false, semi_transparent: false, self_culling: false }
+
+    const norm = normalizeName(name)
+    const block = blockMap[norm]
+
+    if (!block) {
+      console.log(`[BlockFlags] No match for "${name}" (normalized: "${norm}"), using defaults`)
+      return { opaque: false, semi_transparent: false, self_culling: false }
+    }
+
+    const opaque = block.full_cube === "Yes"
+    const semi_transparent = !opaque && block.luminance === 0
+    const self_culling = opaque
+
+    console.log(`[BlockFlags] Matched "${name}" (normalized: "${norm}"), flags:`, { opaque, semi_transparent, self_culling })
+
+    return { opaque, semi_transparent, self_culling }
+  }
+
   const resources = {
     getBlockDefinition: id => blockDefinitions[id.toString()],
     getBlockModel: id => blockModels[id.toString()],
     getTextureUV: id => textureAtlas.getTextureUV(id),
     getTextureAtlas: () => textureAtlas.getTextureAtlas(),
     getPixelSize: () => textureAtlas.getPixelSize(),
-    getBlockFlags: (id) => {
-      const name = id.toString();
-      return {
-        opaque: !name.includes('glass') && !name.includes('leaves') && !name.includes('air'),
-        semi_transparent: name.includes('glass') || name.includes('ice'),
-        self_culling: true
-      };
-    },
+    getBlockFlags,  // <--- dynamic integration
     getBlockProperties: () => null,
     getDefaultBlockProperties: () => null,
   };
@@ -253,23 +297,22 @@ Promise.all([
       renderer.drawStructure(view)
     }, center, Math.max(...center) * 3)
 
-    // ✅ BUILD ALL AT ONCE
     let idx = 0;
     for (let y = 0; y < height; y++) {
       for (let z = 0; z < depth; z++) {
         for (let x = 0; x < width; x++) {
-          const paletteId = blockIds[idx++];
-          const blockEntry = palette[paletteId];
+          const paletteId = blockIds[idx++]
+          const blockEntry = palette[paletteId]
           if (blockEntry && blockEntry.Name !== 'minecraft:air') {
             structure.addBlock(
               [x, y, z],
               blockEntry.Name,
               blockEntry.Properties || {}
-            );
+            )
           }
         }
       }
     }
-    renderer.setStructure(structure);
+    renderer.setStructure(structure)
   })
 })
