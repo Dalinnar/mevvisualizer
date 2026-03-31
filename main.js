@@ -1,4 +1,4 @@
-const { mat4 } = glMatrix
+const { mat4 } = glMatrix;
 const {
   BlockDefinition,
   BlockModel,
@@ -7,60 +7,60 @@ const {
   StructureRenderer,
   TextureAtlas,
   upperPowerOfTwo
-} = deepslate
+} = deepslate;
 
 // ================= CAMERA =================
 class InteractiveCanvas {
   constructor(canvas, onRender, center = null, viewDist = 4) {
-    this.xRotation = 0.8
-    this.yRotation = 0.5
-    this.onRender = onRender
-    this.center = center
-    this.viewDist = viewDist
-    let dragPos = null
+    this.xRotation = 0.8;
+    this.yRotation = 0.5;
+    this.onRender = onRender;
+    this.center = center;
+    this.viewDist = viewDist;
+    let dragPos = null;
 
     canvas.addEventListener('mousedown', e => {
-      if (e.button === 0) dragPos = [e.clientX, e.clientY]
-    })
+      if (e.button === 0) dragPos = [e.clientX, e.clientY];
+    });
 
     canvas.addEventListener('mousemove', e => {
       if (dragPos) {
-        this.yRotation += (e.clientX - dragPos[0]) / 100
-        this.xRotation += (e.clientY - dragPos[1]) / 100
-        dragPos = [e.clientX, e.clientY]
-        this.redraw()
+        this.yRotation += (e.clientX - dragPos[0]) / 100;
+        this.xRotation += (e.clientY - dragPos[1]) / 100;
+        dragPos = [e.clientX, e.clientY];
+        this.redraw();
       }
-    })
+    });
 
-    canvas.addEventListener('mouseup', () => dragPos = null)
+    canvas.addEventListener('mouseup', () => dragPos = null);
 
     canvas.addEventListener('wheel', e => {
-      e.preventDefault()
-      this.viewDist += e.deltaY / 100
-      this.redraw()
-    })
+      e.preventDefault();
+      this.viewDist += e.deltaY / 100;
+      this.redraw();
+    });
 
-    this.redraw()
+    this.redraw();
   }
 
   redraw() {
-    requestAnimationFrame(() => this.render())
+    requestAnimationFrame(() => this.render());
   }
 
   render() {
-    this.yRotation %= Math.PI * 2
-    this.xRotation = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.xRotation))
-    this.viewDist = Math.max(1, this.viewDist)
+    this.yRotation %= Math.PI * 2;
+    this.xRotation = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.xRotation));
+    this.viewDist = Math.max(1, this.viewDist);
 
-    const view = mat4.create()
-    mat4.translate(view, view, [0, 0, -this.viewDist])
-    mat4.rotate(view, view, this.xRotation, [1, 0, 0])
-    mat4.rotate(view, view, this.yRotation, [0, 1, 0])
+    const view = mat4.create();
+    mat4.translate(view, view, [0, 0, -this.viewDist]);
+    mat4.rotate(view, view, this.xRotation, [1, 0, 0]);
+    mat4.rotate(view, view, this.yRotation, [0, 1, 0]);
 
     if (this.center) {
-      mat4.translate(view, view, [-this.center[0], -this.center[1], -this.center[2]])
+      mat4.translate(view, view, [-this.center[0], -this.center[1], -this.center[2]]);
     }
-    this.onRender(view)
+    this.onRender(view);
   }
 }
 
@@ -152,7 +152,7 @@ function create3DBlocks(region) {
 }
 
 // ================= LOAD RESOURCES =================
-const MCMETA = 'https://raw.githubusercontent.com/misode/mcmeta/'
+const MCMETA = 'https://raw.githubusercontent.com/misode/mcmeta/';
 
 async function loadBlockData() {
   const res = await fetch('./blocklist.json');
@@ -160,107 +160,89 @@ async function loadBlockData() {
 }
 
 async function init() {
-  const blockData = await loadBlockData(); // <-- await ensures loaded
+  const blockData = await loadBlockData();
 
   const [blockstates, models, uvMap, atlas] = await Promise.all([
     fetch(`${MCMETA}summary/assets/block_definition/data.min.json`).then(r => r.json()),
     fetch(`${MCMETA}summary/assets/model/data.min.json`).then(r => r.json()),
     fetch(`${MCMETA}atlas/all/data.min.json`).then(r => r.json()),
     new Promise(res => {
-      const img = new Image()
-      img.onload = () => res(img)
-      img.crossOrigin = 'Anonymous'
-      img.src = `${MCMETA}atlas/all/atlas.png`
+      const img = new Image();
+      img.onload = () => res(img);
+      img.crossOrigin = 'Anonymous';
+      img.src = `${MCMETA}atlas/all/atlas.png`;
     })
   ]);
 
-  const blockDefinitions = {}
+  const blockDefinitions = {};
   Object.keys(blockstates).forEach(id => {
-    blockDefinitions['minecraft:' + id] = BlockDefinition.fromJson(blockstates[id])
-  })
+    blockDefinitions['minecraft:' + id] = BlockDefinition.fromJson(blockstates[id]);
+  });
 
-  const blockModels = {}
+  const blockModels = {};
   Object.keys(models).forEach(id => {
     const model = models[id];
     if (model.textures) {
       for (const key in model.textures) {
         const tex = model.textures[key];
-        if (typeof tex === "object" && tex.sprite) {
-          model.textures[key] = tex.sprite;
-        } else if (typeof tex !== "string") {
-          model.textures[key] = "#missing";
-        }
+        if (typeof tex === "object" && tex.sprite) model.textures[key] = tex.sprite;
+        else if (typeof tex !== "string") model.textures[key] = "#missing";
       }
     }
     blockModels['minecraft:' + id] = BlockModel.fromJson(model);
   });
 
-  Object.values(blockModels).forEach(m => m.flatten({ getBlockModel: id => blockModels[id] }))
+  Object.values(blockModels).forEach(m => m.flatten({ getBlockModel: id => blockModels[id] }));
 
-  const atlasCanvas = document.createElement('canvas')
-  const size = upperPowerOfTwo(Math.max(atlas.width, atlas.height))
-  atlasCanvas.width = size
-  atlasCanvas.height = size
-  const ctx = atlasCanvas.getContext('2d')
-  ctx.drawImage(atlas, 0, 0)
-  const atlasData = ctx.getImageData(0, 0, size, size)
+  const atlasCanvas = document.createElement('canvas');
+  const size = upperPowerOfTwo(Math.max(atlas.width, atlas.height));
+  atlasCanvas.width = size;
+  atlasCanvas.height = size;
+  const ctx = atlasCanvas.getContext('2d');
+  ctx.drawImage(atlas, 0, 0);
+  const atlasData = ctx.getImageData(0, 0, size, size);
 
-  const idMap = {}
+  const idMap = {};
   Object.keys(uvMap).forEach(id => {
-    const [u, v, du, dv] = uvMap[id]
-    idMap[Identifier.create(id).toString()] = [
-      u / size, v / size, (u + du) / size, (v + dv) / size
-    ]
-  })
+    const [u, v, du, dv] = uvMap[id];
+    idMap[Identifier.create(id).toString()] = [u / size, v / size, (u + du) / size, (v + dv) / size];
+  });
 
-  const textureAtlas = new TextureAtlas(atlasData, idMap)
+  const textureAtlas = new TextureAtlas(atlasData, idMap);
 
-  // ================= BLOCK FLAG LOGIC =================
   function normalizeName(name) {
     if (typeof name === 'object' && name !== null) {
-      if ('path' in name) name = name.path
-      else name = ''
+      if ('path' in name) name = name.path;
+      else name = '';
     }
-    if (typeof name !== 'string') return ''
-    if (name.startsWith('minecraft:')) name = name.slice('minecraft:'.length)
-    return name.toLowerCase().replace(/\s+/g, '_')
+    if (typeof name !== 'string') return '';
+    if (name.startsWith('minecraft:')) name = name.slice('minecraft:'.length);
+    return name.toLowerCase().replace(/\s+/g, '_');
   }
 
-  const blockMap = {}
+  const blockMap = {};
   blockData.forEach(block => {
-    const mainName = normalizeName(block.block)
-    blockMap[mainName] = block
+    const mainName = normalizeName(block.block);
+    blockMap[mainName] = block;
     if (block.variants) {
       if (Array.isArray(block.variants)) {
-        block.variants.forEach(v => blockMap[normalizeName(v)] = block)
+        block.variants.forEach(v => blockMap[normalizeName(v)] = block);
       } else {
-        blockMap[normalizeName(block.variants)] = block
+        blockMap[normalizeName(block.variants)] = block;
       }
     }
-  })
+  });
 
-function getBlockFlags(name) {
-  if (!name) {
-    console.log(`[BlockFlags] Called with empty name, using defaults`);
-    return { opaque: false, semi_transparent: false, self_culling: false };
+  function getBlockFlags(name) {
+    if (!name) return { opaque: false, semi_transparent: false, self_culling: false };
+    const norm = normalizeName(name);
+    const block = blockMap[norm];
+    if (!block) return { opaque: false, semi_transparent: false, self_culling: false };
+    const opaque = block.full_cube === "Yes" && !block.transparent;
+    const semi_transparent = !opaque && block.transparent;
+    const self_culling = opaque || block.transparent;
+    return { opaque, semi_transparent, self_culling };
   }
-
-  const norm = normalizeName(name);
-  const block = blockMap[norm];
-
-  if (!block) {
-    console.log(`[BlockFlags] No match for "${name}" (normalized: "${norm}"), using defaults`);
-    return { opaque: false, semi_transparent: false, self_culling: false };
-  }
-
-  const opaque = block.full_cube === "Yes" && !block.transparent;
-  const semi_transparent = !opaque && block.transparent;
-  const self_culling = opaque || block.transparent;
-
-  console.log(`[BlockFlags] Matched "${name}" (normalized: "${norm}"), flags:`, { opaque, semi_transparent, self_culling });
-
-  return { opaque, semi_transparent, self_culling };
-}
 
   const resources = {
     getBlockDefinition: id => blockDefinitions[id.toString()],
@@ -270,48 +252,127 @@ function getBlockFlags(name) {
     getPixelSize: () => textureAtlas.getPixelSize(),
     getBlockFlags,
     getBlockProperties: () => null,
-    getDefaultBlockProperties: () => null,
+    getDefaultBlockProperties: () => null
   };
 
-  const canvas = document.getElementById('structure-display')
-  const gl = canvas.getContext('webgl')
+  const canvas = document.getElementById('structure-display');
+  const gl = canvas.getContext('webgl');
 
-  document.getElementById('file-input').addEventListener('change', async e => {
-    const file = e.target.files[0]
-    if (!file) return
+  let currentStructure = null;
+  let currentRenderer = null;
+  let currentCamera = null;
+  let fullBlockData = null;
+  let slider = null;
 
-    const buffer = await file.arrayBuffer()
-    const nbt = deepslate.NbtFile.read(new Uint8Array(buffer))
-    const regions = nbt.root.get("Regions")
-    const region = regions.get(Array.from(regions.keys())[0])
-
-    const { blockIds, palette, width, height, depth } = create3DBlocks(region)
-    const structure = new Structure([width, height, depth])
-    const renderer = new StructureRenderer(gl, structure, resources)
-    const center = [width / 2, height / 2, depth / 2]
-
-    new InteractiveCanvas(canvas, view => {
-      renderer.drawStructure(view)
-    }, center, Math.max(...center) * 3)
+  function rebuildStructureWithYRange(minY, maxY) {
+    if (!fullBlockData || !currentRenderer) return;
+    const { blockIds, palette, width, height, depth } = fullBlockData;
+    const structure = new Structure([width, height, depth]);
 
     let idx = 0;
     for (let y = 0; y < height; y++) {
       for (let z = 0; z < depth; z++) {
         for (let x = 0; x < width; x++) {
-          const paletteId = blockIds[idx++]
-          const blockEntry = palette[paletteId]
-          if (blockEntry && blockEntry.Name !== 'minecraft:air') {
-            structure.addBlock(
-              [x, y, z],
-              blockEntry.Name,
-              blockEntry.Properties || {}
-            )
+          const paletteId = blockIds[idx++];
+          const blockEntry = palette[paletteId];
+          if (blockEntry && blockEntry.Name !== 'minecraft:air' && y >= minY && y <= maxY) {
+            structure.addBlock([x, y, z], blockEntry.Name, blockEntry.Properties || {});
           }
         }
       }
     }
-    renderer.setStructure(structure)
-  })
+
+    currentStructure = structure;
+    currentRenderer.setStructure(structure);
+    if (currentCamera) currentCamera.redraw();
+  }
+
+  document.getElementById('clear-button').addEventListener('click', () => {
+    if (gl) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    currentStructure = currentRenderer = currentCamera = fullBlockData = null;
+    document.getElementById('slider-container').classList.remove('active');
+    document.getElementById('file-input').value = '';
+  });
+
+  // ===== DOWNLOAD MATERIALS CSV =====
+  document.getElementById('download-materials').addEventListener('click', () => {
+    if (!fullBlockData) return alert("No structure loaded!");
+    const { blockIds, palette } = fullBlockData;
+
+    const counts = {};
+    blockIds.forEach(id => {
+      const block = palette[id];
+      if (!block) return;
+      counts[block.Name] = (counts[block.Name] || 0) + 1;
+    });
+
+    let csv = "Block Name,Count,Palette ID\n";
+    Object.keys(counts).forEach(name => {
+      const id = palette.findIndex(b => b.Name === name);
+      csv += `${name},${counts[name]},${id}\n`;
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'materials_list.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  document.getElementById('file-input').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const buffer = await file.arrayBuffer();
+    const nbt = deepslate.NbtFile.read(new Uint8Array(buffer));
+    const regions = nbt.root.get("Regions");
+    const region = regions.get(Array.from(regions.keys())[0]);
+
+    const { blockIds, palette, width, height, depth } = create3DBlocks(region);
+    fullBlockData = { blockIds, palette, width, height, depth };
+
+    const structure = new Structure([width, height, depth]);
+    const renderer = new StructureRenderer(gl, structure, resources);
+    const center = [width / 2, height / 2, depth / 2];
+
+    currentStructure = structure;
+    currentRenderer = renderer;
+
+    currentCamera = new InteractiveCanvas(canvas, view => {
+      renderer.drawStructure(view);
+    }, center, Math.max(...center) * 3);
+
+    if (!slider) {
+      slider = new DoubleRangeSlider('slider-container', {
+        min: 0,
+        max: height - 1,
+        currentMin: 0,
+        currentMax: height - 1,
+        onChange: (minY, maxY) => rebuildStructureWithYRange(minY, maxY)
+      });
+    } else {
+      slider.setRange(0, height - 1);
+    }
+
+    document.getElementById('slider-container').classList.add('active');
+
+    // Build initial full structure
+    let idx = 0;
+    for (let y = 0; y < height; y++) {
+      for (let z = 0; z < depth; z++) {
+        for (let x = 0; x < width; x++) {
+          const paletteId = blockIds[idx++];
+          const blockEntry = palette[paletteId];
+          if (blockEntry && blockEntry.Name !== 'minecraft:air') {
+            structure.addBlock([x, y, z], blockEntry.Name, blockEntry.Properties || {});
+          }
+        }
+      }
+    }
+    renderer.setStructure(structure);
+  });
 }
 
 init();

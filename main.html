@@ -1,63 +1,144 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Deepslate Litematic Viewer</title>
-  <style>
-    html, body {
+<meta charset="UTF-8">
+<title>Deepslate Litematic Viewer</title>
+
+<style>
+/* ================= BASIC LAYOUT ================= */
+html, body {
   margin: 0;
   padding: 0;
-  overflow: hidden; /* optional: prevents scrollbars */
   width: 100%;
-  background-color:gray;
   height: 100%;
+  overflow: hidden;
+  background: #1e1e1e;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
-canvas {
-  display: block;
-  width: 100vw;   /* full viewport width */
-  height: 100vh;  /* full viewport height */
-  border: 1px solid #444; /* optional border */
+.main-content {
+  display: flex;
+  width: 100%;
+  height: calc(100vh - 50px); /* Adjust based on your header height */
+  align-items: center;
+  padding: 10px;
+  box-sizing: border-box;
 }
-  </style>
-</head>
+
+/* ================= THE SLIDER TRACK ================= */
+.slider-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 90%;
+  width: 80px;
+  background: #2a2a2a;
+  border-radius: 12px;
+  margin-right: 15px;
+  box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+}
+
+.slider-track {
+  position: relative;
+  width: 8px;
+  height: 80%; /* Main slider length */
+  background: #444;
+  border-radius: 4px;
+}
+
+.slider-range {
+  position: absolute;
+  width: 100%;
+  background: #007bff;
+  border-radius: 4px;
+  box-shadow: 0 0 8px rgba(0, 123, 255, 0.5);
+}
+
+.slider-thumb {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, 50%); /* Center thumb on coordinate */
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border: 2px solid #007bff;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 2;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.slider-thumb:hover {
+  transform: translate(-50%, 50%) scale(1.2);
+  box-shadow: 0 0 10px rgba(255,255,255,0.3);
+}
+
+/* ================= LABELS ================= */
+.label-box {
+  color: #0af;
+  font-weight: bold;
+  font-size: 14px;
+  margin: 10px 0;
+  background: #111;
+  padding: 4px 8px;
+  border-radius: 4px;
+  min-width: 30px;
+  text-align: center;
+}
+
+.canvas-container {
+  flex: 1;
+  height: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+</style>
+
 <body>
 
-<input id="file-input" type="file" accept=".litematic">
+<!-- ================= FILE INPUT ================= -->
+<div class="controls-container">
+  <div class="file-input-container">
+    <input id="file-input" type="file" accept=".litematic">
+    <button id="clear-button">Clear</button>
+    <button id="download-materials">Download Materials CSV</button>
+  </div>
+</div>
 
-<br>
-
-<canvas id="structure-display" width="600" height="400"></canvas>
+<!-- ================= CANVAS + SLIDER ================= -->
+<div class="main-content">
+  <div class="double-slider-container" id="slider-container">
+    <!-- Slider thumbs and range will be inserted here by JS -->
+  </div>
+  <div class="canvas-container">
+    <canvas id="structure-display" width="600" height="400"></canvas>
+  </div>
+</div>
 
 <script src="https://unpkg.com/deepslate@0.25.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
-
+<script src="slider.js"></script>
 <script src="opaque.js"></script>
 <script type="module" src="./main.js"></script>
-
-<script>
-
-  
-</script>
 
 <script>
 const canvas = document.getElementById('structure-display');
 
 function resizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  canvas.width = canvas.parentElement.clientWidth;
+  canvas.height = canvas.parentElement.clientHeight;
 }
 
 window.addEventListener('resize', () => {
   resizeCanvas();
-  // If you already have a renderer, redraw after resizing
   if (window.renderer && window.renderer.drawStructure) {
-    renderer.drawStructure(); 
+    renderer.drawStructure();
   }
 });
 
-resizeCanvas(); // initial sizing
-
+resizeCanvas();
 </script>
 
 </body>
