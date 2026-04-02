@@ -23,6 +23,18 @@ export async function loadBlockData() {
   return await res.json();
 }
 
+
+function isAnimatedTexture(u, v, du, dv) {
+  return dv > du * 2;
+}
+
+function getFirstFrameUV(u, v, du, dv, size) {
+  if (isAnimatedTexture(u, v, du, dv)) {
+    return [u / size, v / size, (u + du) / size, (v + du) / size];
+  }
+  return [u / size, v / size, (u + du) / size, (v + dv) / size];
+}
+
 export class ResourceLoader {
   constructor() {
     this.blockDefinitions = null;
@@ -30,6 +42,7 @@ export class ResourceLoader {
     this.textureAtlas = null;
     this.blockMap = null;
     this.loading = false;
+    this.animatedTextures = new Set(); // Track which textures are animated
   }
 
   async load(blockData, onProgress) {
@@ -88,7 +101,15 @@ export class ResourceLoader {
       const idMap = {};
       Object.keys(uvMap).forEach(id => {
         const [u, v, du, dv] = uvMap[id];
-        idMap[Identifier.create(id).toString()] = [u / size, v / size, (u + du) / size, (v + dv) / size];
+        
+        // Detect and track animated textures
+        if (isAnimatedTexture(u, v, du, dv)) {
+          this.animatedTextures.add(id);
+        }
+        
+        // Use first frame for animated textures
+        const [u1, v1, u2, v2] = getFirstFrameUV(u, v, du, dv, size);
+        idMap[Identifier.create(id).toString()] = [u1, v1, u2, v2];
       });
 
       this.textureAtlas = new TextureAtlas(atlasData, idMap);
@@ -140,5 +161,9 @@ export class ResourceLoader {
     const self_culling = opaque || isGlass; 
 
     return { opaque, semi_transparent, self_culling };
+  }
+
+  isTextureAnimated(textureId) {
+    return this.animatedTextures.has(textureId);
   }
 }

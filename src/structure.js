@@ -46,10 +46,24 @@ export class StructureBuilder {
   }
 
   buildStructure(filterMinY = -Infinity, filterMaxY = Infinity) {
-    const structure = new Structure([this.totalW, this.totalH, this.totalD]);
+    const bounds = this.getActualBounds();
+
+    // Calculate the actual dimensions based on placed blocks
+    const width = bounds.maxX - bounds.minX + 1;
+    const height = bounds.maxY - bounds.minY + 1;
+    const depth = bounds.maxZ - bounds.minZ + 1;
+
+    // Create structure with actual bounds, not total bounds
+    const structure = new Structure([width, height, depth]);
+
     for (const { wx, wy, wz, entry } of this.placedBlocks) {
       if (wy >= filterMinY && wy <= filterMaxY) {
-        structure.addBlock([wx, wy, wz], entry.Name, entry.Properties || {});
+        // Convert world coordinates to local coordinates
+        const lx = wx - bounds.minX;
+        const ly = wy - bounds.minY;
+        const lz = wz - bounds.minZ;
+
+        structure.addBlock([lx, ly, lz], entry.Name, entry.Properties || {});
       }
     }
     return structure;
