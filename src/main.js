@@ -57,6 +57,7 @@ async function init() {
   }
 
   document.getElementById('clear-button').addEventListener('click', () => {
+    if (currentCamera) currentCamera.destroy(); // add this
     if (gl) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
     document.getElementById('slider-container').classList.remove('active');
@@ -75,77 +76,80 @@ async function init() {
     URL.revokeObjectURL(url);
   });
 
-  document.getElementById('file-input').addEventListener('change', async e => {
-    const file = e.target.files[0];
-    if (!file) return;
+document.getElementById('file-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
 
-    progressDisplay.style.display = 'block';
-    progressDisplay.textContent = 'Reading file...';
+  progressDisplay.style.display = 'block';
+  progressDisplay.textContent = 'Reading file...';
 
-    const buffer = await file.arrayBuffer();
-    progressDisplay.textContent = 'Parsing NBT...';
-    const nbt = deepslate.NbtFile.read(new Uint8Array(buffer));
+  const buffer = await file.arrayBuffer();
+  progressDisplay.textContent = 'Parsing NBT...';
+  const nbt = deepslate.NbtFile.read(new Uint8Array(buffer));
 
-    const metadata = nbt.root.get("Metadata");
-    const enclosing = metadata.get("EnclosingSize");
-    const totalW = Math.abs(Number(enclosing.get("x").value ?? enclosing.get("x")));
-    const totalH = Math.abs(Number(enclosing.get("y").value ?? enclosing.get("y")));
-    const totalD = Math.abs(Number(enclosing.get("z").value ?? enclosing.get("z")));
+  const metadata = nbt.root.get("Metadata");
+  const enclosing = metadata.get("EnclosingSize");
+  const totalW = Math.abs(Number(enclosing.get("x").value ?? enclosing.get("x")));
+  const totalH = Math.abs(Number(enclosing.get("y").value ?? enclosing.get("y")));
+  const totalD = Math.abs(Number(enclosing.get("z").value ?? enclosing.get("z")));
 
-    const regions = nbt.root.get("Regions");
-    const regionNames = Array.from(regions.keys());
-    const builder = new StructureBuilder(totalW, totalH, totalD);
+  const regions = nbt.root.get("Regions");
+  const regionNames = Array.from(regions.keys());
+  const builder = new StructureBuilder(totalW, totalH, totalD);
 
-    for (let i = 0; i < regionNames.length; i++) {
-      progressDisplay.textContent = `Processing region ${i + 1}/${regionNames.length}...`;
-      await new Promise(resolve => setTimeout(resolve, 0)); // yield to main thread
+  for (let i = 0; i < regionNames.length; i++) {
+    progressDisplay.textContent = `Processing region ${i + 1}/${regionNames.length}...`;
+    await new Promise(resolve => setTimeout(resolve, 0));
 
-      const region = regions.get(regionNames[i]);
-      const regionData = create3DBlocks(region);
-      builder.addRegionBlocks(regionNames[i], regionData);
+    const region = regions.get(regionNames[i]);
+    const regionData = create3DBlocks(region);
+    builder.addRegionBlocks(regionNames[i], regionData);
 
-      if (regionData.blockIds && regionData.blockIds.length > 100000) {
-        regionData.blockIds = null; // hint GC
-      }
+    if (regionData.blockIds && regionData.blockIds.length > 100000) {
+      regionData.blockIds = null;
     }
+  }
 
-    progressDisplay.textContent = 'Building structure...';
-    const structure = builder.buildStructure();
-
-    currentBuilder = builder;
-    currentStructure = structure;
-
-    const renderer = new StructureRenderer(gl, structure, resources, {
-      useInvisibleBlockBuffer: false,
-      chunkSize: 16
-    });
-
-    const bounds = builder.getActualBounds();
-    const center = [
-      (bounds.minX + bounds.maxX) / 2,
-      (bounds.minY + bounds.maxY) / 2,
-      (bounds.minZ + bounds.maxZ) / 2
-    ];
-
-    currentRenderer = renderer;
-    currentCamera = new InteractiveCanvas(canvas, view => renderer.drawStructure(view), center);
-
-    if (!slider) {
-      slider = new DoubleRangeSlider('slider-container', {
-        min: Math.floor(bounds.minY),
-        max: Math.floor(bounds.maxY),
-        currentMin: Math.floor(bounds.minY),
-        currentMax: Math.floor(bounds.maxY),
-        onChange: (minY, maxY) => rebuildWithYRange(minY, maxY)
-      });
-    } else {
-      slider.setRange(Math.floor(bounds.minY), Math.floor(bounds.maxY));
-    }
-
-    document.getElementById('slider-container').classList.add('active');
-    renderer.setStructure(structure);
-    progressDisplay.style.display = 'none';
+  progressDisplay.textContent = 'Building structure...';
+  const structure = builder.buildStructure();
+  const renderer = new StructureRenderer(gl, structure, resources, {
+    useInvisibleBlockBuffer: false,
+    chunkSize: 16
   });
+
+  const bounds = builder.getActualBounds();
+  const center = [
+    (bounds.minX + bounds.maxX) / 2,
+    (bounds.minY + bounds.maxY) / 2,
+    (bounds.minZ + bounds.maxZ) / 2
+  ];
+
+  // ✅ destroy old camera here, after renderer and center are ready
+  if (currentCamera) currentCamera.destroy();
+
+  currentBuilder = builder;
+  currentStructure = structure;
+  currentRenderer = renderer;
+  currentCamera = new InteractiveCanvas(canvas, view => renderer.drawStructure(view), center);
+
+  if (!slider) {
+    slider = new DoubleRangeSlider('slider-container', {
+      min: Math.floor(bounds.minY),
+      max: Math.floor(bounds.maxY),
+      currentMin: Math.floor(bounds.minY),
+      currentMax: Math.floor(bounds.maxY),
+      onChange: (minY, maxY) => rebuildWithYRange(minY, maxY)
+    });
+  } else {
+    slider.setRange(Math.floor(bounds.minY), Math.floor(bounds.maxY));
+  }
+
+  document.getElementById('slider-container').classList.add('active');
+  renderer.setStructure(structure);
+  progressDisplay.style.display = 'none';
+});
+
+
 }
 
 init();

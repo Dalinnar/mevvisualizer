@@ -7,30 +7,41 @@ export class InteractiveCanvas {
     this.onRender = onRender;
     this.center = center;
     this.viewDist = viewDist;
+    this.canvas = canvas; // store reference
     let dragPos = null;
 
-    canvas.addEventListener('mousedown', e => {
+    this._onMouseDown = e => {
       if (e.button === 0) dragPos = [e.clientX, e.clientY];
-    });
-
-    canvas.addEventListener('mousemove', e => {
+    };
+    this._onMouseMove = e => {
       if (dragPos) {
         this.yRotation += (e.clientX - dragPos[0]) / 100;
         this.xRotation += (e.clientY - dragPos[1]) / 100;
         dragPos = [e.clientX, e.clientY];
         this.redraw();
       }
-    });
-
-    canvas.addEventListener('mouseup', () => dragPos = null);
-
-    canvas.addEventListener('wheel', e => {
+    };
+    this._onMouseUp = () => dragPos = null;
+    this._onWheel = e => {
       e.preventDefault();
       this.viewDist += e.deltaY / 100;
       this.redraw();
-    });
+    };
+
+    canvas.addEventListener('mousedown', this._onMouseDown);
+    canvas.addEventListener('mousemove', this._onMouseMove);
+    canvas.addEventListener('mouseup', this._onMouseUp);
+    canvas.addEventListener('wheel', this._onWheel);
 
     this.redraw();
+  }
+
+  destroy() {
+    this.canvas.removeEventListener('mousedown', this._onMouseDown);
+    this.canvas.removeEventListener('mousemove', this._onMouseMove);
+    this.canvas.removeEventListener('mouseup', this._onMouseUp);
+    this.canvas.removeEventListener('wheel', this._onWheel);
+    this.onRender = () => { }; // neutralize any in-flight rAF
   }
 
   redraw() {

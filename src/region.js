@@ -3,7 +3,7 @@ export function unpackBlockStates(regionData, paletteSize, width, height, depth)
   const nbits = Math.max(2, Math.ceil(Math.log2(paletteSize)));
   const mask = (1 << nbits) - 1;
   const totalBlocks = width * height * depth;
-  const blockIds = new Uint16Array(totalBlocks); // <-- only change
+  const blockIds =  paletteSize <= 256 ? new Uint8Array(totalBlocks) : paletteSize <= 65536 ? new Uint16Array(totalBlocks) : new Uint32Array(totalBlocks);
   const y_shift = Math.abs(width * depth);
   const z_shift = Math.abs(width);
   let idx = 0;
