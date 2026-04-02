@@ -83,7 +83,6 @@ export class InteractiveCanvas {
   }
 
   animate() {
-    // Check if any movement keys are pressed
     const hasMovement = this.keys['w'] || this.keys['a'] || this.keys['s'] || this.keys['d'] || 
                         this.keys[' '] || this.keys['shift'];
     
@@ -105,33 +104,25 @@ export class InteractiveCanvas {
     this.xRotation = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.xRotation));
     this.viewDist = Math.max(1, this.viewDist);
 
-    // Handle WASD movement relative to camera view
     const movement = vec3.create();
     const speed = this.movementSpeed;
 
-    // Forward/Back (W/S) - along camera's forward axis (negative Z in camera space)
     if (this.keys['w']) movement[2] -= speed;
     if (this.keys['s']) movement[2] += speed;
 
-    // Left/Right (A/D) - along camera's right axis (X in camera space)
     if (this.keys['a']) movement[0] -= speed;
     if (this.keys['d']) movement[0] += speed;
 
-    // Up/Down (Space/Shift) - along camera's up axis (Y in camera space)
     if (this.keys[' ']) movement[1] += speed;
     if (this.keys['shift']) movement[1] -= speed;
 
-    // Transform movement vector to world space relative to camera rotation
     if (movement[0] !== 0 || movement[1] !== 0 || movement[2] !== 0) {
-      // Create inverse rotation matrix (apply rotations in REVERSE order with negated angles)
       const rotationMatrix = mat4.create();
       mat4.rotateY(rotationMatrix, rotationMatrix, -this.yRotation);
       mat4.rotateX(rotationMatrix, rotationMatrix, -this.xRotation);
 
-      // Transform movement to world space
       vec3.transformMat4(movement, movement, rotationMatrix);
 
-      // Apply movement to center
       this.center[0] += movement[0];
       this.center[1] += movement[1];
       this.center[2] += movement[2];

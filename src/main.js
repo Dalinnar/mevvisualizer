@@ -160,8 +160,6 @@ async function init() {
     progressDisplay.style.display = 'none';
   });
 
-
-  // --- URL param loading ---
   async function loadFromUrl(url) {
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Fetching file...';
@@ -254,7 +252,6 @@ async function init() {
     progressDisplay.style.display = 'none';
   }
 
-  // Check for ?ext_link= on load
   const params = new URLSearchParams(window.location.search);
   const extLink = params.get('ext_link');
   if (extLink) {

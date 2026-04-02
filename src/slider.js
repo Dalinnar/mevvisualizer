@@ -1,4 +1,3 @@
-// ===== SLIDER COMPONENT =====
 class DoubleRangeSlider {
   constructor(containerId, options) {
     this.container = document.getElementById(containerId);
@@ -52,11 +51,9 @@ class DoubleRangeSlider {
       }
 
       this._update();
-      // Fire onChange when input is committed
       this.onChange(this.currentMin, this.currentMax);
     };
 
-    // Commit on Enter or blur
     inputMin.addEventListener('keydown', e => { if (e.key === 'Enter') commit('min', inputMin.value); });
     inputMin.addEventListener('blur', () => commit('min', inputMin.value));
     inputMax.addEventListener('keydown', e => { if (e.key === 'Enter') commit('max', inputMax.value); });
@@ -81,11 +78,9 @@ class DoubleRangeSlider {
       }
 
       this._update();
-      // Don't call onChange during drag - only update visuals
     };
 
     const onUp = () => {
-      // Fire onChange only when drag ends
       this.onChange(this.currentMin, this.currentMax);
       
       document.removeEventListener('mousemove', onMove);
@@ -114,17 +109,14 @@ class DoubleRangeSlider {
     const thumbMax = document.getElementById('thumb-max');
     const thumbMin = document.getElementById('thumb-min');
 
-    // Check if thumbs are overlapping (within 15px)
     const overlap = Math.abs(maxPct - minPct) < 15;
 
     if (overlap) {
-      // Offset thumbs slightly when they overlap
       thumbMax.style.top = `calc(${maxPct}% - 8px)`;
       thumbMin.style.top = `calc(${minPct}% + 8px)`;
       thumbMax.classList.add('thumb-offset-max');
       thumbMin.classList.add('thumb-offset-min');
     } else {
-      // Normal positioning when not overlapping
       thumbMax.style.top = `${maxPct}%`;
       thumbMin.style.top = `${minPct}%`;
       thumbMax.classList.remove('thumb-offset-max');

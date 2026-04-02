@@ -48,17 +48,15 @@ export class StructureBuilder {
   buildStructure(filterMinY = -Infinity, filterMaxY = Infinity) {
     const bounds = this.getActualBounds();
 
-    // Calculate the actual dimensions based on placed blocks
     const width = bounds.maxX - bounds.minX + 1;
     const height = bounds.maxY - bounds.minY + 1;
     const depth = bounds.maxZ - bounds.minZ + 1;
 
-    // Create structure with actual bounds, not total bounds
     const structure = new Structure([width, height, depth]);
 
     for (const { wx, wy, wz, entry } of this.placedBlocks) {
       if (wy >= filterMinY && wy <= filterMaxY) {
-        // Convert world coordinates to local coordinates
+
         const lx = wx - bounds.minX;
         const ly = wy - bounds.minY;
         const lz = wz - bounds.minZ;

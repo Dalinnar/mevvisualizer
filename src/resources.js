@@ -42,7 +42,7 @@ export class ResourceLoader {
     this.textureAtlas = null;
     this.blockMap = null;
     this.loading = false;
-    this.animatedTextures = new Set(); // Track which textures are animated
+    this.animatedTextures = new Set();
   }
 
   async load(blockData, onProgress) {
@@ -107,14 +107,12 @@ export class ResourceLoader {
           this.animatedTextures.add(id);
         }
         
-        // Use first frame for animated textures
         const [u1, v1, u2, v2] = getFirstFrameUV(u, v, du, dv, size);
         idMap[Identifier.create(id).toString()] = [u1, v1, u2, v2];
       });
 
       this.textureAtlas = new TextureAtlas(atlasData, idMap);
 
-      // Build block map from blocklist.json data
       this.blockMap = {};
       blockData.forEach(block => {
         const mainName = normalizeName(block.block);

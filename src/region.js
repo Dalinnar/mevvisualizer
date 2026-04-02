@@ -1,4 +1,3 @@
-// Unpacks packed block state indices from raw region data
 export function unpackBlockStates(regionData, paletteSize, width, height, depth) {
   const nbits = Math.max(2, Math.ceil(Math.log2(paletteSize)));
   const mask = (1 << nbits) - 1;
@@ -41,7 +40,6 @@ export function unpackBlockStates(regionData, paletteSize, width, height, depth)
   return blockIds;
 }
 
-// Parses a Litematica region NBT tag into structured block data
 export function create3DBlocks(region) {
   const size = region.get("Size");
   const sx = Number(size.get("x").value ?? size.get("x"));
