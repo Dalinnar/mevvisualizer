@@ -26,7 +26,15 @@ function createProgressDisplay() {
   return div;
 }
 
+function closeMenu() {
+  const btn = document.getElementById('burger-menu-btn');
+  const panel = document.getElementById('controls-panel');
+  const mainContent = document.getElementById('main-content');
 
+  btn.classList.remove('open');
+  panel.classList.remove('open');
+  mainContent.classList.remove('menu-open');
+}
 
 async function init() {
   const blockData = await loadBlockData();
@@ -59,11 +67,12 @@ async function init() {
   }
 
   document.getElementById('clear-button').addEventListener('click', () => {
-    if (currentCamera) currentCamera.destroy(); // add this
+    if (currentCamera) currentCamera.destroy();
     if (gl) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
+    closeMenu();
   });
 
   document.getElementById('download-materials').addEventListener('click', () => {
@@ -84,6 +93,7 @@ async function init() {
 
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Reading file...';
+    closeMenu();
 
     const buffer = await file.arrayBuffer();
     progressDisplay.textContent = 'Parsing NBT...';
@@ -126,7 +136,6 @@ async function init() {
       (bounds.minZ + bounds.maxZ) / 2
     ];
 
-    // ✅ destroy old camera here, after renderer and center are ready
     if (currentCamera) currentCamera.destroy();
 
     currentBuilder = builder;
@@ -156,6 +165,7 @@ async function init() {
   async function loadFromUrl(url) {
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Fetching file...';
+    closeMenu();
 
     let buffer;
 
@@ -166,13 +176,10 @@ async function init() {
     }
 
     try {
-      // 1️⃣ Try direct request first
       try {
         buffer = await fetchArrayBuffer(url);
       } catch (directErr) {
         console.warn('Direct fetch failed, falling back to proxy...', directErr);
-
-        // 2️⃣ Fallback to AllOrigins
         const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
         buffer = await fetchArrayBuffer(proxyUrl);
       }
@@ -182,7 +189,6 @@ async function init() {
       return;
     }
 
-    // --- rest of your pipeline unchanged ---
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(buffer));
 

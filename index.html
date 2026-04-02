@@ -16,34 +16,190 @@ html, body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
+/* ================= BURGER MENU ================= */
+.burger-menu-btn {
+  position: fixed;
+  top: 15px;
+  right: 15px;
+  z-index: 999;
+  background: #2a2a2a;
+  border: 2px solid #4a9eff;
+  border-radius: 6px;
+  width: 45px;
+  height: 45px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.3s ease;
+  padding: 0;
+}
+
+.burger-menu-btn:hover {
+  background: #333;
+  box-shadow: 0 0 12px rgba(74, 158, 255, 0.3);
+}
+
+.burger-menu-btn.open {
+  background: #4a9eff;
+}
+
+.burger-menu-btn.open svg path {
+  stroke: #1e1e1e;
+}
+
+.burger-line {
+  width: 24px;
+  height: 2.5px;
+  background: #4a9eff;
+  transition: all 0.3s ease;
+  border-radius: 2px;
+}
+
+.burger-menu-btn.open .burger-line:nth-child(1) {
+  transform: rotate(45deg) translateY(11px);
+}
+
+.burger-menu-btn.open .burger-line:nth-child(2) {
+  opacity: 0;
+}
+
+.burger-menu-btn.open .burger-line:nth-child(3) {
+  transform: rotate(-45deg) translateY(-11px);
+}
+
+/* ================= CONTROLS PANEL ================= */
+.controls-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 300px;
+  height: 100vh;
+  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+  border-right: 2px solid #4a9eff;
+  z-index: 998;
+  padding: 20px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  box-shadow: 2px 0 15px rgba(0, 0, 0, 0.5);
+  transform: translateX(-100%);
+  transition: transform 0.3s ease;
+}
+
+.controls-panel.open {
+  transform: translateX(0);
+}
+
+.controls-panel h1 {
+  color: #4a9eff;
+  font-size: 18px;
+  margin-top: 60px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #444;
+  padding-bottom: 10px;
+}
+
+/* ================= FILE INPUT SECTION ================= */
+.file-input-section {
+  margin-bottom: 25px;
+}
+
+.file-input-label {
+  display: block;
+  color: #0af;
+  font-weight: bold;
+  font-size: 13px;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#file-input {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  margin-bottom: 10px;
+  background: #111;
+  color: #4a9eff;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+#file-input:hover {
+  border-color: #4a9eff;
+}
+
+/* ================= BUTTONS ================= */
+.button-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+button {
+  padding: 12px 16px;
+  background: #2a2a2a;
+  color: #4a9eff;
+  border: 1px solid #4a9eff;
+  border-radius: 6px;
+  font-weight: bold;
+  font-size: 12px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  background: #4a9eff;
+  color: #1e1e1e;
+  box-shadow: 0 0 12px rgba(74, 158, 255, 0.4);
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+#clear-button {
+  background: #4a3030;
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+
+#clear-button:hover {
+  background: #ff6b6b;
+  color: #1e1e1e;
+  box-shadow: 0 0 12px rgba(255, 107, 107, 0.4);
+}
+
+/* ================= LAYOUT ================= */
 .main-content {
   display: flex;
   width: 100%;
-  height: calc(100vh - 50px); /* Adjust based on your header height */
+  height: 100vh;
   align-items: center;
-  padding: 10px;
-  box-sizing: border-box;
+  overflow: hidden;
+  transition: margin-left 0.3s ease;
 }
 
-/* ================= LABELS ================= */
-.label-box {
-  color: #0af;
-  font-weight: bold;
-  font-size: 14px;
-  margin: 10px 0;
-  background: #111;
-  padding: 4px 8px;
-  border-radius: 4px;
-  min-width: 30px;
-  text-align: center;
+.main-content.menu-open {
+  margin-left: 300px;
 }
 
 .canvas-container {
   flex: 1;
+  width: 100%;
   height: 100%;
-  border-radius: 8px;
   overflow: hidden;
 }
+
+/* ================= DOUBLE SLIDER ================= */
 .double-slider-container {
   display: none;
   flex-direction: column;
@@ -57,11 +213,11 @@ html, body {
   padding: 12px 0;
   box-sizing: border-box;
 }
+
 .double-slider-container.active {
   display: flex;
 }
 
-/* Editable number at top (max) and bottom (min) */
 .slider-value-input {
   width: 44px;
   background: #111;
@@ -76,13 +232,13 @@ html, body {
   box-sizing: border-box;
   cursor: text;
 }
+
 .slider-value-input:focus {
   outline: none;
   border-color: #4a9eff;
   box-shadow: 0 0 4px rgba(74, 158, 255, 0.4);
 }
 
-/* Wide transparent wrapper — thumbs live here */
 .slider-track {
   position: relative;
   width: 28px;
@@ -93,7 +249,6 @@ html, body {
   justify-content: center;
 }
 
-/* The visible thin line */
 .slider-track-line {
   position: absolute;
   top: 0; bottom: 0;
@@ -130,12 +285,12 @@ html, body {
   transition: box-shadow 0.1s, top 0.1s ease-out;
   box-sizing: border-box;
 }
+
 .slider-thumb:hover,
 .slider-thumb:active {
   box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.3);
 }
 
-/* Visual distinction when thumbs overlap */
 .slider-thumb.thumb-offset-max {
   background: #e8f4ff;
   border-color: #4a9eff;
@@ -148,21 +303,47 @@ html, body {
   opacity: 0.9;
 }
 
+/* ================= RESPONSIVE ================= */
+@media (max-width: 768px) {
+  .controls-panel {
+    width: 100%;
+  }
+
+  .main-content.menu-open {
+    margin-left: 0;
+  }
+}
+
 </style>
 
 <body>
 
-<!-- ================= FILE INPUT ================= -->
-<div class="controls-container">
-  <div class="file-input-container">
+<!-- ================= BURGER MENU BUTTON ================= -->
+<button class="burger-menu-btn" id="burger-menu-btn">
+  <svg class="logo_pic" width="48" height="48" viewBox="-50 -50 100 100">
+    <path fill="none" stroke="#4a9eff" stroke-width="2" d="m0-40 34 20v40L0 40l-34-20v-40z"></path>
+    <path stroke="#4a9eff" stroke-width="1.5" fill="none" d="M0 40V0m0 0 34-20M0 0l-34-20m52 50v-40m-36 40v-40m0-20 36 19m0-19-36 19M0 20 34 2M0 20-34 2"></path>
+    <path stroke="#4a9eff" stroke-width="1.5" fill="none" d="M19 29 0 20m-34 0 17-10m-1 20L0 20"></path>
+  </svg>
+</button>
+
+<!-- ================= CONTROLS PANEL ================= -->
+<div class="controls-panel" id="controls-panel">
+  <h1>⚙️ Controls</h1>
+  
+  <div class="file-input-section">
+    <label class="file-input-label">Load File</label>
     <input id="file-input" type="file" accept=".litematic">
-    <button id="clear-button">Clear</button>
-    <button id="download-materials">Download Materials CSV</button>
+  </div>
+
+  <div class="button-group">
+    <button id="clear-button">🗑️ Clear</button>
+    <button id="download-materials">📥 Download Materials CSV</button>
   </div>
 </div>
 
 <!-- ================= CANVAS + SLIDER ================= -->
-<div class="main-content">
+<div class="main-content" id="main-content">
   <div class="double-slider-container" id="slider-container">
     <!-- Slider thumbs and range will be inserted here by JS -->
   </div>
@@ -173,8 +354,6 @@ html, body {
 
 <script src="https://unpkg.com/deepslate@0.25.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
-
-<!--<script  src="./main.js"></script>-->
 
 <script type="module" src="./src/main.js"></script>
 
@@ -194,6 +373,30 @@ window.addEventListener('resize', () => {
 });
 
 resizeCanvas();
+
+// ================= BURGER MENU LOGIC ================= 
+document.getElementById('burger-menu-btn').addEventListener('click', () => {
+  const btn = document.getElementById('burger-menu-btn');
+  const panel = document.getElementById('controls-panel');
+  const mainContent = document.getElementById('main-content');
+
+  btn.classList.toggle('open');
+  panel.classList.toggle('open');
+  mainContent.classList.toggle('menu-open');
+});
+
+// Close menu when clicking outside
+document.getElementById('main-content').addEventListener('click', () => {
+  const btn = document.getElementById('burger-menu-btn');
+  const panel = document.getElementById('controls-panel');
+  const mainContent = document.getElementById('main-content');
+
+  if (btn.classList.contains('open')) {
+    btn.classList.remove('open');
+    panel.classList.remove('open');
+    mainContent.classList.remove('menu-open');
+  }
+});
 </script>
 
 </body>
