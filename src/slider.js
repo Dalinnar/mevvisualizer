@@ -1,4 +1,3 @@
-
 // ===== SLIDER COMPONENT =====
 class DoubleRangeSlider {
   constructor(containerId, options) {
@@ -53,6 +52,7 @@ class DoubleRangeSlider {
       }
 
       this._update();
+      // Fire onChange when input is committed
       this.onChange(this.currentMin, this.currentMax);
     };
 
@@ -81,10 +81,13 @@ class DoubleRangeSlider {
       }
 
       this._update();
-      this.onChange(this.currentMin, this.currentMax);
+      // Don't call onChange during drag - only update visuals
     };
 
     const onUp = () => {
+      // Fire onChange only when drag ends
+      this.onChange(this.currentMin, this.currentMax);
+      
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       document.removeEventListener('touchmove', onMove);
