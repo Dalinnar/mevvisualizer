@@ -84,12 +84,9 @@ html, body {
   box-sizing: border-box;
   overflow-y: auto;
   box-shadow: 2px 0 15px rgba(0, 0, 0, 0.5);
-  transform: translateX(-100%);
-  transition: transform 0.3s ease;
-}
 
-.controls-panel.open {
-  transform: translateX(0);
+  /* ✅ ALWAYS visible */
+  transform: none;
 }
 
 .controls-panel h1 {
@@ -318,15 +315,6 @@ button:active {
 
 <body>
 
-<!-- ================= BURGER MENU BUTTON ================= -->
-<button class="burger-menu-btn" id="burger-menu-btn">
-  <svg class="logo_pic" width="48" height="48" viewBox="-50 -50 100 100">
-    <path fill="none" stroke="#4a9eff" stroke-width="2" d="m0-40 34 20v40L0 40l-34-20v-40z"></path>
-    <path stroke="#4a9eff" stroke-width="1.5" fill="none" d="M0 40V0m0 0 34-20M0 0l-34-20m52 50v-40m-36 40v-40m0-20 36 19m0-19-36 19M0 20 34 2M0 20-34 2"></path>
-    <path stroke="#4a9eff" stroke-width="1.5" fill="none" d="M19 29 0 20m-34 0 17-10m-1 20L0 20"></path>
-  </svg>
-</button>
-
 <!-- ================= CONTROLS PANEL ================= -->
 <div class="controls-panel" id="controls-panel">
   <h1>⚙️ Controls</h1>
@@ -384,29 +372,6 @@ window.addEventListener('resize', () => {
 
 resizeCanvas();
 
-// ================= BURGER MENU LOGIC ================= 
-document.getElementById('burger-menu-btn').addEventListener('click', () => {
-  const btn = document.getElementById('burger-menu-btn');
-  const panel = document.getElementById('controls-panel');
-  const mainContent = document.getElementById('main-content');
-
-  btn.classList.toggle('open');
-  panel.classList.toggle('open');
-  mainContent.classList.toggle('menu-open');
-});
-
-// Close menu when clicking outside
-document.getElementById('main-content').addEventListener('click', () => {
-  const btn = document.getElementById('burger-menu-btn');
-  const panel = document.getElementById('controls-panel');
-  const mainContent = document.getElementById('main-content');
-
-  if (btn.classList.contains('open')) {
-    btn.classList.remove('open');
-    panel.classList.remove('open');
-    mainContent.classList.remove('menu-open');
-  }
-});
 </script>
 
 </body>

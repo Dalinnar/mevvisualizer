@@ -1,92 +1,53 @@
 function localToWorld(position, size) {
-
     const originX = size.x >= 0 ? position.x : position.x + size.x;
     const originY = size.y >= 0 ? position.y : position.y + size.y;
     const originZ = size.z >= 0 ? position.z : position.z + size.z;
-
     const absX = Math.abs(size.x);
     const absY = Math.abs(size.y);
     const absZ = Math.abs(size.z);
-
     const endX = originX + absX - 1;
     const endY = originY + absY - 1;
     const endZ = originZ + absZ - 1;
-
-    const result = {
+    return {
         origin: { x: originX, y: originY, z: originZ },
         end: { x: endX, y: endY, z: endZ },
         size: { x: absX, y: absY, z: absZ },
-        bounds: {
-            minX: originX,
-            maxX: endX,
-            minY: originY,
-            maxY: endY,
-            minZ: originZ,
-            maxZ: endZ
-        }
+        bounds: { minX: originX, maxX: endX, minY: originY, maxY: endY, minZ: originZ, maxZ: endZ }
     };
-
-
-    return result;
 }
 
 function getLitematicOrigin(regions) {
-    console.log("getLitematicOrigin input:", regions);
-
-    let minX = Infinity;
-    let minY = Infinity;
-    let minZ = Infinity;
-
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
     for (const region of regions) {
-        const worldCoords = localToWorld(region.position, region.size);
-        console.log("Origin check region:", region, worldCoords);
-
-        minX = Math.min(minX, worldCoords.origin.x);
-        minY = Math.min(minY, worldCoords.origin.y);
-        minZ = Math.min(minZ, worldCoords.origin.z);
+        const w = localToWorld(region.position, region.size);
+        minX = Math.min(minX, w.origin.x);
+        minY = Math.min(minY, w.origin.y);
+        minZ = Math.min(minZ, w.origin.z);
     }
-
-    const result = { x: minX, y: minY, z: minZ };
-    console.log("getLitematicOrigin result:", result);
-    return result;
+    return { x: minX, y: minY, z: minZ };
 }
 
 function getLitematicBounds(regions) {
-    console.log("getLitematicBounds input:", regions);
-
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
     let minZ = Infinity, maxZ = -Infinity;
-
     for (const region of regions) {
-        const worldCoords = localToWorld(region.position, region.size);
-        console.log("Bounds check region:", region, worldCoords);
-
-        minX = Math.min(minX, worldCoords.bounds.minX);
-        maxX = Math.max(maxX, worldCoords.bounds.maxX);
-        minY = Math.min(minY, worldCoords.bounds.minY);
-        maxY = Math.max(maxY, worldCoords.bounds.maxY);
-        minZ = Math.min(minZ, worldCoords.bounds.minZ);
-        maxZ = Math.max(maxZ, worldCoords.bounds.maxZ);
+        const w = localToWorld(region.position, region.size);
+        minX = Math.min(minX, w.bounds.minX); maxX = Math.max(maxX, w.bounds.maxX);
+        minY = Math.min(minY, w.bounds.minY); maxY = Math.max(maxY, w.bounds.maxY);
+        minZ = Math.min(minZ, w.bounds.minZ); maxZ = Math.max(maxZ, w.bounds.maxZ);
     }
-
-    const result = {
+    return {
         origin: { x: minX, y: minY, z: minZ },
         end: { x: maxX, y: maxY, z: maxZ },
-        size: {
-            x: maxX - minX + 1,
-            y: maxY - minY + 1,
-            z: maxZ - minZ + 1
-        }
+        size: { x: maxX - minX + 1, y: maxY - minY + 1, z: maxZ - minZ + 1 }
     };
-
-    console.log("getLitematicBounds result:", result);
-    return result;
 }
 
-export function validateStackingStructure(nbt) {
-    console.log("validateStackingStructure input:", nbt);
 
+
+
+export function validateStackingStructure(nbt) {
     const result = {
         isValid: false,
         errors: [],
@@ -103,24 +64,20 @@ export function validateStackingStructure(nbt) {
     const root = nbt.root || nbt;
     const regions = root.get("Regions");
 
-    console.log("Root + Regions:", { root, regions });
-
     if (!regions) {
         result.errors.push("Invalid NBT structure: missing Regions");
-        console.log("Error:", result.errors);
         return result;
     }
 
     const regionNames = Array.from(regions.keys());
     result.regionCount = regionNames.length;
 
-    console.log("Region names:", regionNames);
-
     if (regionNames.length < 3) {
         result.errors.push(`Expected at least 3 regions, found ${regionNames.length}`);
-        console.log("Error:", result.errors);
         return result;
     }
+
+    // ── Parse all regions ────────────────────────────────────────────────────
 
     const regionDataArray = [];
 
@@ -132,43 +89,21 @@ export function validateStackingStructure(nbt) {
         const posX = Number(pos.get("x").value ?? pos.get("x"));
         const posY = Number(pos.get("y").value ?? pos.get("y"));
         const posZ = Number(pos.get("z").value ?? pos.get("z"));
-
         const sizeX = Number(size.get("x").value ?? size.get("x"));
         const sizeY = Number(size.get("y").value ?? size.get("y"));
         const sizeZ = Number(size.get("z").value ?? size.get("z"));
-
-        console.log("Region raw:", name, { posX, posY, posZ, sizeX, sizeY, sizeZ });
 
         const worldCoords = localToWorld(
             { x: posX, y: posY, z: posZ },
             { x: sizeX, y: sizeY, z: sizeZ }
         );
 
-        const regionData = {
-            name,
-            posX,
-            posY,
-            posZ,
-            sizeX,
-            sizeY,
-            sizeZ,
-            absX: Math.abs(sizeX),
-            absY: Math.abs(sizeY),
-            absZ: Math.abs(sizeZ),
-            endX: worldCoords.end.x,
-            endZ: worldCoords.end.z,
-            minX: worldCoords.bounds.minX,
-            maxX: worldCoords.bounds.maxX,
-            minY: worldCoords.bounds.minY,
-            maxY: worldCoords.bounds.maxY,
-            minZ: worldCoords.bounds.minZ,
-            maxZ: worldCoords.bounds.maxZ,
+        regionDataArray.push({
+            name, posX, posY, posZ, sizeX, sizeY, sizeZ,
+            absX: Math.abs(sizeX), absY: Math.abs(sizeY), absZ: Math.abs(sizeZ),
+            ...worldCoords.bounds,
             worldCoords
-        };
-
-        console.log("Processed region:", regionData);
-
-        regionDataArray.push(regionData);
+        });
 
         result.regions.push({
             name,
@@ -180,105 +115,143 @@ export function validateStackingStructure(nbt) {
         result.worldCoordinates[name] = worldCoords;
     }
 
-    result.litematicOrigin = getLitematicOrigin(
-        result.regions.map(r => ({ position: r.position, size: r.size }))
-    );
+    result.litematicOrigin = getLitematicOrigin(result.regions.map(r => ({ position: r.position, size: r.size })));
+    result.litematicBounds = getLitematicBounds(result.regions.map(r => ({ position: r.position, size: r.size })));
 
-    result.litematicBounds = getLitematicBounds(
-        result.regions.map(r => ({ position: r.position, size: r.size }))
-    );
-
-    console.log("Global origin:", result.litematicOrigin);
-    console.log("Global bounds:", result.litematicBounds);
-
-
+    // ── All regions must share the same Y band ───────────────────────────────
 
     const firstRegion = regionDataArray[0];
-
     const allSameY = regionDataArray.every(r =>
         r.minY === firstRegion.minY && r.maxY === firstRegion.maxY
     );
 
-    //console.log("allSameY details:", regionDataArray.map(r => ({ name: r.name, minY: r.minY, maxY: r.maxY })));
-    //console.log("allSameXPosition details:", regionDataArray.map(r => ({ name: r.name, minX: r.minX, maxX: r.maxX })));
-    //console.log("allSameZPosition details:", regionDataArray.map(r => ({ name: r.name, minZ: r.minZ, maxZ: r.maxZ })));
-    //console.log("flags:", { allSameY, allSameWidth, allSameDepth, allSameXPosition, allSameZPosition });
-    //console.log("Check allSameY:", allSameY);
-
-
     if (!allSameY) {
         result.errors.push("All regions must have the same Y position and height");
+        return result;
     }
 
-    const allSameWidth = regionDataArray.every(r => r.absX === firstRegion.absX);
-    const allSameDepth = regionDataArray.every(r => r.absZ === firstRegion.absZ);
+    // ── Detect stacking axis by trying both and seeing which works ───────────
+    // Strategy: for each candidate stack axis, group regions by their position
+    // on the OTHER axis (parallel axis). A valid grouping means every cluster
+    // has >= 3 members and is adjacent along the stack axis.
 
-    console.log("Check width/depth:", { allSameWidth, allSameDepth });
+    function tryAxis(strideAxis) {
+        const parallelAxis = strideAxis === 'x' ? 'z' : 'x';
+        const minKey = parallelAxis === 'x' ? 'minX' : 'minZ';
+        const maxKey = parallelAxis === 'x' ? 'maxX' : 'maxZ';
 
-    const allSameXPosition = regionDataArray.every(
-        r => r.minX === firstRegion.minX && r.maxX === firstRegion.maxX
-    );
+        // Group regions that OVERLAP on the parallel axis into the same cluster.
+        // We do a simple union-find: merge any two regions whose parallel ranges overlap.
+        const clusters = [];
 
-    const allSameZPosition = regionDataArray.every(
-        r => r.minZ === firstRegion.minZ && r.maxZ === firstRegion.maxZ
-    );
+        for (const r of regionDataArray) {
+            const rMin = r[minKey];
+            const rMax = r[maxKey];
 
-    console.log("Check positions:", { allSameXPosition, allSameZPosition });
+            // Find an existing cluster that overlaps with this region on the parallel axis
+            const matchIndex = clusters.findIndex(cluster =>
+                cluster.some(c => c[minKey] <= rMax && c[maxKey] >= rMin)
+            );
 
-    let stackingAxis = null;
-    let isAdjacent = false;
-
-    if (allSameWidth && allSameXPosition && !allSameZPosition) {
-        stackingAxis = firstRegion.sizeZ > 0 ? 'z' : 'z-';
-        console.log("Detected Z stacking axis:", stackingAxis);
-        isAdjacent = checkZAxisAdjacency(regionDataArray);
-    } else if (allSameDepth && allSameZPosition && !allSameXPosition) {
-        stackingAxis = firstRegion.sizeX > 0 ? 'x' : 'x-';
-        console.log("Detected X stacking axis:", stackingAxis);
-        isAdjacent = checkXAxisAdjacency(regionDataArray);
-    } else if (!allSameXPosition && !allSameZPosition) {
-        result.errors.push("Regions cannot vary on both X and Z axes simultaneously");
-    } else if (allSameXPosition && allSameZPosition) {
-        result.errors.push("All regions have identical positions - cannot determine stacking pattern");
-    }
-
-    console.log("Adjacency result:", isAdjacent);
-
-    result.stackAxis = stackingAxis;
-    result.details.isAdjacent = isAdjacent;
-
-    if (!isAdjacent && stackingAxis) {
-        result.errors.push(`Regions are not adjacent on the ${stackingAxis} axis`);
-    }
-
-    if (isAdjacent) {
-        const sortedRegions = [...regionDataArray].sort((a, b) => {
-            return (stackingAxis === 'x' || stackingAxis === 'x-')
-                ? a.minX - b.minX
-                : a.minZ - b.minZ;
-        });
-
-        console.log("Sorted regions:", sortedRegions);
-
-        result.details.sortedRegions = sortedRegions.map(r => r.name);
-        result.details.sortedRegionDetails = sortedRegions.map(r => ({
-            name: r.name,
-            worldBounds: {
-                minX: r.minX,
-                maxX: r.maxX,
-                minY: r.minY,
-                maxY: r.maxY,
-                minZ: r.minZ,
-                maxZ: r.maxZ
+            if (matchIndex !== -1) {
+                clusters[matchIndex].push(r);
+            } else {
+                clusters.push([r]);
             }
-        }));
+        }
+
+        // Every cluster must have >= 3 regions AND be adjacent along the stride axis
+        for (const cluster of clusters) {
+            if (cluster.length < 3) return null;
+
+            const sorted = [...cluster].sort((a, b) =>
+                strideAxis === 'x' ? a.minX - b.minX : a.minZ - b.minZ
+            );
+            for (let i = 0; i < sorted.length - 1; i++) {
+                const gap = strideAxis === 'x'
+                    ? sorted[i + 1].minX - sorted[i].maxX - 1
+                    : sorted[i + 1].minZ - sorted[i].maxZ - 1;
+                if (gap > 0) return null;
+            }
+        }
+
+        // Convert back to a Map keyed by cluster index for compatibility
+        const clusterMap = new Map();
+        clusters.forEach((cluster, i) => clusterMap.set(i, cluster));
+        return clusterMap;
     }
 
-    if (result.errors.length === 0 && isAdjacent && stackingAxis) {
-        result.isValid = true;
+    let strideAxis = null;
+    let parallelAxis = null;
+    let clusterMap = null;
+
+    const tryX = tryAxis('x');
+    const tryZ = tryAxis('z');
+
+    if (tryX && tryZ) {
+        // Both work — pick the one with more clusters (more parallel lanes)
+        // or just default to z since that's the most common stacking direction
+        clusterMap = tryZ.size >= tryX.size ? tryZ : tryX;
+        strideAxis = tryZ.size >= tryX.size ? 'z' : 'x';
+        parallelAxis = strideAxis === 'x' ? 'z' : 'x';
+        result.warnings.push("Both X and Z axes are valid stacking axes; defaulting to Z");
+    } else if (tryX) {
+        strideAxis = 'x';
+        parallelAxis = 'z';
+        clusterMap = tryX;
+    } else if (tryZ) {
+        strideAxis = 'z';
+        parallelAxis = 'x';
+        clusterMap = tryZ;
+    } else {
+        result.errors.push("Could not determine a valid stacking axis. Ensure each parallel cluster has at least 3 adjacent regions.");
+        return result;
     }
 
-    console.log("Final result:", result);
+    // Preserve sign from the actual region size for downstream code
+    result.stackAxis = firstRegion[`size${strideAxis.toUpperCase()}`] >= 0
+        ? strideAxis
+        : `${strideAxis}-`;
+
+    // ── Validate each cluster and build details ───────────────────────────────
+
+    const allSortedNames = [];
+    const clusterDetails = [];
+    let hasErrors = false;
+
+    for (const [parallelCoord, cluster] of clusterMap) {
+        const sorted = [...cluster].sort((a, b) =>
+            strideAxis === 'x' ? a.minX - b.minX : a.minZ - b.minZ
+        );
+
+        // Uniform size within cluster
+        //const refWidth = sorted[0].absX;
+        //const refDepth = sorted[0].absZ;
+        //if (!sorted.every(r => r.absX === refWidth && r.absZ === refDepth)) {
+        //    result.errors.push(
+        //        `Cluster at ${parallelAxis}=${parallelCoord} has regions with inconsistent sizes`
+        //    );
+        //    hasErrors = true;
+        //    continue;
+        //}
+
+        allSortedNames.push(...sorted.map(r => r.name));
+        clusterDetails.push({
+            parallelCoord,
+            names: sorted.map(r => r.name),
+            firstName: sorted[0].name,
+            lastName: sorted[sorted.length - 1].name,
+            middleNames: sorted.slice(1, -1).map(r => r.name),
+        });
+    }
+
+    if (hasErrors) return result;
+
+    result.details.sortedRegions = allSortedNames;
+    result.details.clusters = clusterDetails;
+    result.details.clusterCount = clusterDetails.length;
+    result.isValid = true;
+
     return result;
 }
 
@@ -329,38 +302,18 @@ function checkXAxisAdjacency(regionDataArray) {
 }
 
 
+
 function deepCloneNbtCompound(compound) {
     return deepslate.NbtCompound.fromJson(compound.toJson());
 }
 
 
-export function stackMiddle(nbt, stackSize) {
-    const validation = validateStackingStructure(nbt);
-    if (!validation.isValid) {
-        throw new Error(`Cannot stack invalid structure: ${validation.errors.join('; ')}`);
-    }
-
-    const { stackAxis, details } = validation;
-    const sortedNames = details.sortedRegions; // e.g. ["a", "b", "c"]
-
-    // Identify first, middle(s), and last
-    const firstName = sortedNames[0];
-    const lastName = sortedNames[sortedNames.length - 1];
-    const middleNames = sortedNames.slice(1, -1); // everything between first and last
-
-    const root = nbt.root || nbt;
-    const regions = root.get("Regions");
-
-    // Deep-clone the NBT — we'll rebuild Regions from scratch
-    const newNbt = nbt; // mutate in place, or clone if your NBT lib supports it
-    const newRegions = new Map();
-
-    // Helper: get region data by name
-    function getRegionEntry(name) {
-        return regions.get(name);
-    }
-
-    // Helper: read position/size from a region entry
+/**
+ * Groups sorted region names into clusters based on gaps along the stack axis.
+ * A "gap" is when the distance between one region's world-end and the next's
+ * world-start is greater than `gapThreshold` blocks.
+ */
+function detectClusters(sortedNames, regions, strideAxis, gapThreshold = 1) {
     function readVec3(entry, tag) {
         const v = entry.get(tag);
         return {
@@ -370,121 +323,144 @@ export function stackMiddle(nbt, stackSize) {
         };
     }
 
-    // Helper: clone a region entry and set a new position
+    const clusters = [];
+    let current = [sortedNames[0]];
+
+    for (let i = 1; i < sortedNames.length; i++) {
+        const prevName = sortedNames[i - 1];
+        const currName = sortedNames[i];
+
+        const prevEntry = regions.get(prevName);
+        const currEntry = regions.get(currName);
+
+        const prevPos = readVec3(prevEntry, "Position");
+        const prevSize = readVec3(prevEntry, "Size");
+        const currPos = readVec3(currEntry, "Position");
+        const currSize = readVec3(currEntry, "Size");
+
+        const prevWorld = localToWorld(prevPos, prevSize);
+        const currWorld = localToWorld(currPos, currSize);
+
+        // Gap between previous region's end and current region's start
+        const gap = currWorld.origin[strideAxis] - prevWorld.end[strideAxis] - 1;
+
+        if (gap > gapThreshold) {
+            clusters.push(current);
+            current = [currName];
+        } else {
+            current.push(currName);
+        }
+    }
+    clusters.push(current);
+    return clusters;
+}
+
+export function stackMiddle(nbt, stackSize) {
+    const validation = validateStackingStructure(nbt);
+    if (!validation.isValid) {
+        throw new Error(`Cannot stack invalid structure: ${validation.errors.join('; ')}`);
+    }
+
+    const { stackAxis, details } = validation;
+    const root = nbt.root || nbt;
+    const regions = root.get("Regions");
+    const strideAxis = stackAxis.startsWith('x') ? 'x' : 'z';
+
+    function readVec3(entry, tag) {
+        const v = entry.get(tag);
+        return {
+            x: Number(v.get("x").value ?? v.get("x")),
+            y: Number(v.get("y").value ?? v.get("y")),
+            z: Number(v.get("z").value ?? v.get("z")),
+        };
+    }
+
     function cloneWithPosition(sourceEntry, newPos) {
-        // Deep clone the region (NBT map)
         const cloned = deepCloneNbtCompound(sourceEntry);
         const pos = cloned.get("Position");
         pos.get("x").value !== undefined
-            ? (pos.get("x").value = newPos.x)
-            : pos.set("x", newPos.x);
+            ? (pos.get("x").value = newPos.x) : pos.set("x", newPos.x);
         pos.get("y").value !== undefined
-            ? (pos.get("y").value = newPos.y)
-            : pos.set("y", newPos.y);
+            ? (pos.get("y").value = newPos.y) : pos.set("y", newPos.y);
         pos.get("z").value !== undefined
-            ? (pos.get("z").value = newPos.z)
-            : pos.set("z", newPos.z);
+            ? (pos.get("z").value = newPos.z) : pos.set("z", newPos.z);
         return cloned;
     }
 
-    // --- Compute the stride (size along the stacking axis) of a middle region ---
-    const firstMiddleName = middleNames[0];
-    const firstMiddleEntry = getRegionEntry(firstMiddleName);
-    const firstMiddleSize = readVec3(firstMiddleEntry, "Size");
-    const strideAxis = stackAxis.startsWith('x') ? 'x' : 'z';
-    const stride = Math.abs(firstMiddleSize[strideAxis]); // blocks per middle copy
+    const newRegions = new Map();
 
-    // --- Read positions of the original first/last to find where middles start ---
-    const firstEntry = getRegionEntry(firstName);
-    const lastEntry = getRegionEntry(lastName);
-    const firstPos = readVec3(firstEntry, "Position");
-    const firstSize = readVec3(firstEntry, "Size");
-    const firstWorld = localToWorld(firstPos, firstSize);
-
-
-
-    // The first copy of the first middle starts right after "first" ends
-    const middleStartCoord = firstWorld.end[strideAxis] + 1;
-
-    // --- Build new region map ---
-
-    // 1. Keep "first" as-is
-    newRegions.set(firstName, getRegionEntry(firstName));
-
-    // 2. Emit stackSize copies of each middle region, renaming them
-    let coord = middleStartCoord;
-
-    console.log("firstName:", firstName);
-    console.log("firstPos:", firstPos);
-    console.log("firstSize:", firstSize);
-    console.log("firstWorld:", firstWorld);
-    console.log("middleStartCoord:", middleStartCoord);
-
-    const dbgMid = getRegionEntry(middleNames[0]);
-    const dbgMidPos = readVec3(dbgMid, "Position");
-    const dbgMidSize = readVec3(dbgMid, "Size");
-    const dbgMidWorld = localToWorld(dbgMidPos, dbgMidSize);
-    console.log("original middle pos:", dbgMidPos);
-    console.log("original middle world:", dbgMidWorld);
-
-    for (let copy = 0; copy < stackSize; copy++) {
-        for (const midName of middleNames) {
-            const midEntry = getRegionEntry(midName);
-            const midPos = readVec3(midEntry, "Position");
-            const midSize = readVec3(midEntry, "Size");
-            const midWorld = localToWorld(midPos, midSize);
-
-            // The offset from its world-origin to its NBT position (may differ when size is negative)
-            const offsetX = midPos.x - midWorld.origin.x;
-            const offsetY = midPos.y - midWorld.origin.y;
-            const offsetZ = midPos.z - midWorld.origin.z;
-
-            const newWorldOrigin = { ...midWorld.origin };
-            newWorldOrigin[strideAxis] = coord;
-
-            const newPos = {
-                x: newWorldOrigin.x + offsetX,
-                y: newWorldOrigin.y + offsetY,
-                z: newWorldOrigin.z + offsetZ,
-            };
-
-            const newName = middleNames.length === 1
-                ? `${midName}_${copy}`           // "b_0", "b_1", …
-                : `${midName}_${copy}`;          // same pattern for multi-middle
-
-            newRegions.set(newName, cloneWithPosition(midEntry, newPos));
-            coord += stride;
+    for (const { firstName, middleNames, lastName } of details.clusters) {
+        if (!middleNames || middleNames.length === 0) {
+            throw new Error(`Cluster starting with "${firstName}" has no middle regions to stack`);
         }
+
+        // 1. Keep "first" as-is
+        newRegions.set(firstName, regions.get(firstName));
+
+        // Stride = size of first middle along the stack axis
+        const firstMiddleEntry = regions.get(middleNames[0]);
+        const firstMiddleSize = readVec3(firstMiddleEntry, "Size");
+        const stride = Math.abs(firstMiddleSize[strideAxis]);
+
+        // Start coord: right after "first" ends
+        const firstEntry = regions.get(firstName);
+        const firstPos = readVec3(firstEntry, "Position");
+        const firstSize = readVec3(firstEntry, "Size");
+        const firstWorld = localToWorld(firstPos, firstSize);
+        let coord = firstWorld.end[strideAxis] + 1;
+
+        // 2. Emit stackSize copies of each middle
+        for (let copy = 0; copy < stackSize; copy++) {
+            for (const midName of middleNames) {
+                const midEntry = regions.get(midName);
+                const midPos = readVec3(midEntry, "Position");
+                const midSize = readVec3(midEntry, "Size");
+                const midWorld = localToWorld(midPos, midSize);
+
+                const offset = {
+                    x: midPos.x - midWorld.origin.x,
+                    y: midPos.y - midWorld.origin.y,
+                    z: midPos.z - midWorld.origin.z,
+                };
+                const newWorldOrigin = { ...midWorld.origin, [strideAxis]: coord };
+                const newPos = {
+                    x: newWorldOrigin.x + offset.x,
+                    y: newWorldOrigin.y + offset.y,
+                    z: newWorldOrigin.z + offset.z,
+                };
+
+                newRegions.set(`${midName}_${copy}`, cloneWithPosition(midEntry, newPos));
+                coord += stride;
+            }
+        }
+
+        // 3. Place "last" right after all middles
+        const lastEntry = regions.get(lastName);
+        const lastPos = readVec3(lastEntry, "Position");
+        const lastSize = readVec3(lastEntry, "Size");
+        const lastWorld = localToWorld(lastPos, lastSize);
+
+        const lastOffset = {
+            x: lastPos.x - lastWorld.origin.x,
+            y: lastPos.y - lastWorld.origin.y,
+            z: lastPos.z - lastWorld.origin.z,
+        };
+        const newLastWorldOrigin = { ...lastWorld.origin, [strideAxis]: coord };
+        const newLastPos = {
+            x: newLastWorldOrigin.x + lastOffset.x,
+            y: newLastWorldOrigin.y + lastOffset.y,
+            z: newLastWorldOrigin.z + lastOffset.z,
+        };
+
+        newRegions.set(lastName, cloneWithPosition(lastEntry, newLastPos));
     }
 
-    // 3. Place "last" right after all the middles
-    const lastPos = readVec3(lastEntry, "Position");
-    const lastSize = readVec3(lastEntry, "Size");
-    const lastWorld = localToWorld(lastPos, lastSize);
+    // ── Write back ────────────────────────────────────────────────────────────
 
-    const lastOffsetX = lastPos.x - lastWorld.origin.x;
-    const lastOffsetY = lastPos.y - lastWorld.origin.y;
-    const lastOffsetZ = lastPos.z - lastWorld.origin.z;
-
-    const newLastWorldOrigin = { ...lastWorld.origin };
-    newLastWorldOrigin[strideAxis] = coord;
-
-    const newLastPos = {
-        x: newLastWorldOrigin.x + lastOffsetX,
-        y: newLastWorldOrigin.y + lastOffsetY,
-        z: newLastWorldOrigin.z + lastOffsetZ,
-    };
-
-    newRegions.set(lastName, cloneWithPosition(lastEntry, newLastPos));
-
-    // --- Swap the Regions map back into the NBT ---
     const regionsCompound = new deepslate.NbtCompound();
-
     for (const [name, region] of newRegions.entries()) {
         regionsCompound.set(name, region);
     }
-
     root.set("Regions", regionsCompound);
-
     return nbt;
 }

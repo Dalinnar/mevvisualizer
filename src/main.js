@@ -27,14 +27,6 @@ function createProgressDisplay() {
   return div;
 }
 
-function closeMenu() {
-  const btn = document.getElementById('burger-menu-btn');
-  const panel = document.getElementById('controls-panel');
-  const mainContent = document.getElementById('main-content');
-  btn.classList.remove('open');
-  panel.classList.remove('open');
-  mainContent.classList.remove('menu-open');
-}
 
 
 async function init() {
@@ -74,10 +66,12 @@ async function init() {
   // ⭐ NEW: download function
   function downloadLitematic(nbtFile, filename = 'stacked.litematic') {
     try {
-      const raw = nbtFile.write(); // Uint8Array
-      const gzipped = pako.gzip(raw);
+      // ✅ ensure compression
+      nbtFile.compression = 'gzip';
 
-      const blob = new Blob([gzipped], { type: 'application/octet-stream' });
+      const data = nbtFile.write(); // already compressed correctly
+
+      const blob = new Blob([data], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
 
       const a = document.createElement('a');
@@ -178,7 +172,6 @@ async function init() {
     document.getElementById('stack-controls').style.display = 'none';
     document.getElementById('stack-count').value = 1;
 
-    closeMenu();
   });
 
   document.getElementById('download-materials').addEventListener('click', () => {
@@ -221,7 +214,6 @@ async function init() {
 
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Reading file...';
-    closeMenu();
 
     originalBuffer = await file.arrayBuffer();
 
