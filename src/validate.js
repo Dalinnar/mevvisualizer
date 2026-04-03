@@ -44,9 +44,6 @@ function getLitematicBounds(regions) {
     };
 }
 
-
-
-
 export function validateStackingStructure(nbt) {
     const result = {
         isValid: false,
@@ -255,104 +252,9 @@ export function validateStackingStructure(nbt) {
     return result;
 }
 
-function checkZAxisAdjacency(regionDataArray) {
-    console.log("checkZAxisAdjacency input:", regionDataArray);
-
-    const sorted = [...regionDataArray].sort((a, b) => a.minZ - b.minZ);
-
-    for (let i = 0; i < sorted.length - 1; i++) {
-        const current = sorted[i];
-        const next = sorted[i + 1];
-
-        console.log("Z adjacency check:", current.name, next.name, {
-            currentMax: current.maxZ,
-            nextMin: next.minZ
-        });
-
-        if (next.minZ > current.maxZ + 1) {
-            console.log("Gap detected on Z axis");
-            return false;
-        }
-    }
-
-    return true;
-}
-
-function checkXAxisAdjacency(regionDataArray) {
-    console.log("checkXAxisAdjacency input:", regionDataArray);
-
-    const sorted = [...regionDataArray].sort((a, b) => a.minX - b.minX);
-
-    for (let i = 0; i < sorted.length - 1; i++) {
-        const current = sorted[i];
-        const next = sorted[i + 1];
-
-        console.log("X adjacency check:", current.name, next.name, {
-            currentMax: current.maxX,
-            nextMin: next.minX
-        });
-
-        if (next.minX > current.maxX + 1) {
-            console.log("Gap detected on X axis");
-            return false;
-        }
-    }
-
-    return true;
-}
-
-
 
 function deepCloneNbtCompound(compound) {
     return deepslate.NbtCompound.fromJson(compound.toJson());
-}
-
-
-/**
- * Groups sorted region names into clusters based on gaps along the stack axis.
- * A "gap" is when the distance between one region's world-end and the next's
- * world-start is greater than `gapThreshold` blocks.
- */
-function detectClusters(sortedNames, regions, strideAxis, gapThreshold = 1) {
-    function readVec3(entry, tag) {
-        const v = entry.get(tag);
-        return {
-            x: Number(v.get("x").value ?? v.get("x")),
-            y: Number(v.get("y").value ?? v.get("y")),
-            z: Number(v.get("z").value ?? v.get("z")),
-        };
-    }
-
-    const clusters = [];
-    let current = [sortedNames[0]];
-
-    for (let i = 1; i < sortedNames.length; i++) {
-        const prevName = sortedNames[i - 1];
-        const currName = sortedNames[i];
-
-        const prevEntry = regions.get(prevName);
-        const currEntry = regions.get(currName);
-
-        const prevPos = readVec3(prevEntry, "Position");
-        const prevSize = readVec3(prevEntry, "Size");
-        const currPos = readVec3(currEntry, "Position");
-        const currSize = readVec3(currEntry, "Size");
-
-        const prevWorld = localToWorld(prevPos, prevSize);
-        const currWorld = localToWorld(currPos, currSize);
-
-        // Gap between previous region's end and current region's start
-        const gap = currWorld.origin[strideAxis] - prevWorld.end[strideAxis] - 1;
-
-        if (gap > gapThreshold) {
-            clusters.push(current);
-            current = [currName];
-        } else {
-            current.push(currName);
-        }
-    }
-    clusters.push(current);
-    return clusters;
 }
 
 export function stackMiddle(nbt, stackSize) {
@@ -453,6 +355,19 @@ export function stackMiddle(nbt, stackSize) {
         };
 
         newRegions.set(lastName, cloneWithPosition(lastEntry, newLastPos));
+
+        // ── Patch EnclosingSize ───────────────────────────────────────────────
+        const middleTotal = stackSize * middleNames.length * stride;
+        const newAxisSize = Math.abs(firstSize[strideAxis]) + middleTotal + Math.abs(lastSize[strideAxis]);
+
+        const metadata = root.get("Metadata");
+        const enclosing = metadata.get("EnclosingSize");
+
+        const setVal = (compound, key, val) => {
+            const node = compound.get(key);
+            node.value !== undefined ? (node.value = val) : compound.set(key, val);
+        };
+        setVal(enclosing, strideAxis, newAxisSize);
     }
 
     // ── Write back ────────────────────────────────────────────────────────────

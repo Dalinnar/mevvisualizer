@@ -16,6 +16,20 @@ html, body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
+.enclosing-size {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #4a9eff;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: bold;
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
 /* ================= BURGER MENU ================= */
 .burger-menu-btn {
   position: fixed;
@@ -311,6 +325,84 @@ button:active {
   }
 }
 
+/* ================= STACK SIZE CONTROLS ================= */
+#stack-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 15px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+#stack-controls label {
+  color: #0af;
+  font-weight: bold;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+
+#stack-count {
+  width: 60px;
+  padding: 6px 8px;
+  background: #111;
+  color: #4a9eff;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: bold;
+  text-align: center;
+  cursor: text;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+#stack-count:focus {
+  outline: none;
+  border-color: #4a9eff;
+  box-shadow: 0 0 6px rgba(74, 158, 255, 0.5);
+}
+
+#enclosing-size-display {
+  padding: 8px 10px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #4a9eff;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: bold;
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
+/* ================= DRAG & DROP ================= */
+#file-drop-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 60px;
+  border: 2px dashed #4a9eff;
+  border-radius: 6px;
+  background: #111;
+  color: #4a9eff;
+  font-size: 13px;
+  font-weight: bold;
+  font-family: monospace;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  user-select: none;
+}
+
+#file-drop-area.hover {
+  background: #1a1a1a;
+  border-color: #0af;
+}
+
+#file-drop-area input[type="file"] {
+  display: none; /* hide the input */
+}
+
 </style>
 
 <body>
@@ -319,8 +411,8 @@ button:active {
 <div class="controls-panel" id="controls-panel">
   <h1>⚙️ Controls</h1>
   
-  <div class="file-input-section">
-    <label class="file-input-label">Load File</label>
+  <div class="file-input-section" id="file-drop-area">
+    <p>📂 Drag & Drop Litematic here or click to browse</p>
     <input id="file-input" type="file" accept=".litematic">
   </div>
 
@@ -333,7 +425,12 @@ button:active {
   <div id="stack-controls" style="display:none; margin-top:10px;">
     <label>Stack Count:</label>
     <input id="stack-count" type="number" min="1" value="1" style="width:60px;">
+
+     <div id="enclosing-size-display" class="enclosing-size">
+    <!-- Will be updated by JS -->
+    </div>
   </div>
+
 </div>
 
 <!-- ADD THIS -->
@@ -341,13 +438,16 @@ button:active {
 
 <!-- ================= CANVAS + SLIDER ================= -->
 <div class="main-content" id="main-content">
-  <div class="double-slider-container" id="slider-container">
-    <!-- Slider thumbs and range will be inserted here by JS -->
-  </div>
   <div class="canvas-container">
     <canvas id="structure-display" width="600" height="400"></canvas>
   </div>
+  <div class="double-slider-container" id="slider-container">
+    <!-- Slider thumbs and range will be inserted here by JS -->
+  </div>
+ 
 </div>
+
+
 
 <script src="https://unpkg.com/deepslate@0.25.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
@@ -372,6 +472,50 @@ window.addEventListener('resize', () => {
 
 resizeCanvas();
 
+</script>
+
+<script>
+
+  const fileDropArea = document.getElementById('file-drop-area');
+const fileInput = document.getElementById('file-input');
+
+// Open file picker on click
+fileDropArea.addEventListener('click', () => fileInput.click());
+
+// Highlight on drag over
+fileDropArea.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  fileDropArea.classList.add('hover');
+});
+
+// Remove highlight on drag leave
+fileDropArea.addEventListener('dragleave', () => {
+  fileDropArea.classList.remove('hover');
+});
+
+// Handle drop
+fileDropArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  fileDropArea.classList.remove('hover');
+  
+  const files = e.dataTransfer.files;
+  if (files.length > 0) {
+    handleFile(files[0]);
+  }
+});
+
+// Handle file selection via input
+fileInput.addEventListener('change', (e) => {
+  if (fileInput.files.length > 0) {
+    handleFile(fileInput.files[0]);
+  }
+});
+
+// Your existing file handling function
+function handleFile(file) {
+  console.log('Selected file:', file.name);
+  // Call your existing code to load the Litematic
+}
 </script>
 
 </body>

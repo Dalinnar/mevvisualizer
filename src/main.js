@@ -102,6 +102,10 @@ async function init() {
     const totalH = Math.abs(Number(enclosing.get("y").value ?? enclosing.get("y")));
     const totalD = Math.abs(Number(enclosing.get("z").value ?? enclosing.get("z")));
 
+    console.log("enclosing_size: ", totalD, totalH, totalW)
+    const sizeDisplay = document.getElementById('enclosing-size-display');
+    sizeDisplay.textContent = `Size: ${totalW} x ${totalH} x ${totalD}`;
+
     const regions = stacked.root.get("Regions");
     const regionNames = Array.from(regions.keys());
     const builder = new StructureBuilder(totalW, totalH, totalD);
