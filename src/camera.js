@@ -9,7 +9,7 @@ export class InteractiveCanvas {
     this.viewDist = viewDist;
     this.canvas = canvas;
     this.keys = {};
-    this.movementSpeed = 0.1;
+    this.movementSpeed = 0.3;
     this.isAnimating = false;
     this.animationFrameId = null;
     

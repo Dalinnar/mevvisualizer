@@ -3,523 +3,525 @@
   <head>
     <meta charset="UTF-8">
     <title>Deepslate Litematic Viewer</title>
-
     <style>
-/* ================= BASIC LAYOUT ================= */
-html, body {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #1e1e1e;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-}
+      /* ================= BASIC LAYOUT ================= */
+      html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #1e1e1e;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      }
+      .enclosing-size {
+      margin-top: 12px;
+      padding: 8px 10px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #4a9eff;
+      font-family: monospace;
+      font-size: 13px;
+      font-weight: bold;
+      text-align: center;
+      letter-spacing: 0.5px;
+      }
+      /* ================= BURGER MENU ================= */
+      .burger-menu-btn {
+      position: fixed;
+      top: 15px;
+      right: 15px;
+      z-index: 999;
+      background: #2a2a2a;
+      border: 2px solid #4a9eff;
+      border-radius: 6px;
+      width: 45px;
+      height: 45px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.3s ease;
+      padding: 0;
+      }
+      .burger-menu-btn:hover {
+      background: #333;
+      box-shadow: 0 0 12px rgba(74, 158, 255, 0.3);
+      }
+      .burger-menu-btn.open {
+      background: #4a9eff;
+      }
+      .burger-menu-btn.open svg path {
+      stroke: #1e1e1e;
+      }
+      .burger-line {
+      width: 24px;
+      height: 2.5px;
+      background: #4a9eff;
+      transition: all 0.3s ease;
+      border-radius: 2px;
+      }
+      .burger-menu-btn.open .burger-line:nth-child(1) {
+      transform: rotate(45deg) translateY(11px);
+      }
+      .burger-menu-btn.open .burger-line:nth-child(2) {
+      opacity: 0;
+      }
+      .burger-menu-btn.open .burger-line:nth-child(3) {
+      transform: rotate(-45deg) translateY(-11px);
+      }
+      /* ================= CONTROLS PANEL ================= */
+      .controls-panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 300px;
+      background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+      border: 2px solid #4a9eff;
+      z-index: 998;
+      padding: 20px;
+      box-sizing: border-box;
+      overflow-y: auto;
+      box-shadow: 2px 0 15px rgba(0, 0, 0, 0.5);
+      /* ✅ ALWAYS visible */
+      transform: translateX(0);
+      transition: transform 0.3s ease;
+      }
+      .controls-panel h1 {
+      color: #4a9eff;
+      font-size: 18px;
+      margin-top: 10px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #444;
+      padding-bottom: 10px;
+      }
+      /* ================= FILE INPUT SECTION ================= */
+      .file-input-section {
+      margin-bottom: 25px;
+      }
+      .file-input-label {
+      display: block;
+      color: #0af;
+      font-weight: bold;
+      font-size: 13px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      }
+      #file-input {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: #111;
+      color: #4a9eff;
+      border: 1px solid #333;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      }
+      #file-input:hover {
+      border-color: #4a9eff;
+      }
+      /* ================= BUTTONS ================= */
+      .button-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      }
+      button {
+      padding: 12px 16px;
+      background: #2a2a2a;
+      color: #4a9eff;
+      border: 1px solid #4a9eff;
+      border-radius: 6px;
+      font-weight: bold;
+      font-size: 12px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      transition: all 0.2s ease;
+      }
+      button:hover {
+      background: #4a9eff;
+      color: #1e1e1e;
+      box-shadow: 0 0 12px rgba(74, 158, 255, 0.4);
+      }
+      button:active {
+      transform: scale(0.98);
+      }
+      #clear-button {
+      background: #4a3030;
+      border-color: #ff6b6b;
+      color: #ff6b6b;
+      }
+      #clear-button:hover {
+      background: #ff6b6b;
+      color: #1e1e1e;
+      box-shadow: 0 0 12px rgba(255, 107, 107, 0.4);
+      }
+      /* ================= LAYOUT ================= */
+      .main-content {
+      display: flex;
+      width: 100%;
+      height: 100vh;
+      align-items: center;
+      overflow: hidden;
+      transition: margin-left 0.3s ease;
+      }
+      .main-content.menu-open {
+      margin-left: 300px;
+      }
+      .canvas-container {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      }
+      /* ================= DOUBLE SLIDER ================= */
+      .double-slider-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      width: 60px;
+      height: 100%;
+      background: #2a2a2a;
+      border-radius: 12px;
+      margin-right: 15px;
+      box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+      padding: 12px 0;
+      box-sizing: border-box;
+      }
+      .double-slider-container.active {
+      display: flex;
+      }
+      .slider-value-input {
+      width: 44px;
+      background: #111;
+      color: #4a9eff;
+      border: 1px solid #333;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      font-weight: bold;
+      text-align: center;
+      padding: 4px 2px;
+      box-sizing: border-box;
+      cursor: text;
+      }
+      .slider-value-input:focus {
+      outline: none;
+      border-color: #4a9eff;
+      box-shadow: 0 0 4px rgba(74, 158, 255, 0.4);
+      }
+      .slider-track {
+      position: relative;
+      width: 28px;
+      flex: 1;
+      margin: 10px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      }
+      .slider-track-line {
+      position: absolute;
+      top: 0; bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 6px;
+      background: #444;
+      border-radius: 3px;
+      pointer-events: none;
+      }
+      .slider-range {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 6px;
+      background: #4a9eff;
+      border-radius: 3px;
+      box-shadow: 0 0 8px rgba(74, 158, 255, 0.4);
+      pointer-events: none;
+      }
+      .slider-thumb {
+      position: absolute;
+      left: 50%;
+      width: 20px;
+      height: 20px;
+      background: #fff;
+      border: 2px solid #4a9eff;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      cursor: ns-resize;
+      z-index: 2;
+      transition: box-shadow 0.1s, top 0.1s ease-out;
+      box-sizing: border-box;
+      }
+      .slider-thumb:hover,
+      .slider-thumb:active {
+      box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.3);
+      }
+      .slider-thumb.thumb-offset-max {
+      background: #e8f4ff;
+      border-color: #4a9eff;
+      opacity: 0.9;
+      }
+      .slider-thumb.thumb-offset-min {
+      background: #b3e5ff;
+      border-color: #4a9eff;
+      opacity: 0.9;
+      }
+      /* ================= RESPONSIVE ================= */
+      @media (max-width: 768px) {
+      .controls-panel {
+      width: 100%;
+      }
+      .main-content.menu-open {
+      margin-left: 0;
+      }
+      }
+      /* ================= STACK SIZE CONTROLS ================= */
+      #stack-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 15px;
+      font-family: 'JetBrains Mono', monospace;
+      }
+      #stack-controls label {
+      color: #0af;
+      font-weight: bold;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+      }
+      #stack-count ,#cluster-gap{
+      width: 60px;
+      padding: 6px 8px;
+      background: #111;
+      color: #4a9eff;
+      border: 1px solid #333;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 13px;
+      font-weight: bold;
+      text-align: center;
+      cursor: text;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      }
+      #stack-count:focus ,#cluster-gap:focus{
+      outline: none;
+      border-color: #4a9eff;
+      box-shadow: 0 0 6px rgba(74, 158, 255, 0.5);
+      }
+      #enclosing-size-display {
+      padding: 8px 10px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #4a9eff;
+      font-family: monospace;
+      font-size: 13px;
+      font-weight: bold;
+      text-align: center;
+      letter-spacing: 0.5px;
+      }
+      /* ================= DRAG & DROP ================= */
+      #file-drop-area {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 60px;
+      border: 2px dashed #4a9eff;
+      border-radius: 6px;
+      background: #111;
+      color: #4a9eff;
+      font-size: 13px;
+      font-weight: bold;
+      font-family: monospace;
+      text-align: center;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+      user-select: none;
+      }
+      #file-drop-area.hover {
+      background: #1a1a1a;
+      border-color: #0af;
+      }
+      #file-drop-area input[type="file"] {
+      display: none; /* hide the input */
+      }
+      .panel-toggle {
+      position: fixed;
+      top: 20px;
+      left: 300px;
+      z-index: 999;
+      width: 30px;
+      height: 50px;
+      background: #2a2a2a;
+      color: #4a9eff;
+      border: 2px solid #4a9eff;
 
-.enclosing-size {
-  margin-top: 12px;
-  padding: 8px 10px;
-  background: #111;
-  border: 1px solid #333;
-  border-radius: 4px;
-  color: #4a9eff;
-  font-family: monospace;
-  font-size: 13px;
-  font-weight: bold;
-  text-align: center;
-  letter-spacing: 0.5px;
-}
+      border-radius: 0 6px 6px 0;
+      cursor: pointer;
+      font-size: 18px;
+      transition: all 0.3s ease;
+      }
+      .panel-toggle:hover {
+      background: #333;
+      }
+      /* Closed state */
+      .controls-panel.closed {
+      transform: translateX(-100%);
+      }
+      .main-content.panel-closed {
+      margin-left: 0;
+      }
+      .panel-toggle.closed {
+      left: 0;
+      transform: rotate(180deg);
+      }
 
-/* ================= BURGER MENU ================= */
-.burger-menu-btn {
-  position: fixed;
-  top: 15px;
-  right: 15px;
-  z-index: 999;
-  background: #2a2a2a;
-  border: 2px solid #4a9eff;
-  border-radius: 6px;
-  width: 45px;
-  height: 45px;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 6px;
-  transition: all 0.3s ease;
-  padding: 0;
-}
+      #gap-controls {
+           display: flex;
+           align-items: center;
+           gap: 6px;
+           margin-top: 6px;
+          }         
 
-.burger-menu-btn:hover {
-  background: #333;
-  box-shadow: 0 0 12px rgba(74, 158, 255, 0.3);
-}
-
-.burger-menu-btn.open {
-  background: #4a9eff;
-}
-
-.burger-menu-btn.open svg path {
-  stroke: #1e1e1e;
-}
-
-.burger-line {
-  width: 24px;
-  height: 2.5px;
-  background: #4a9eff;
-  transition: all 0.3s ease;
-  border-radius: 2px;
-}
-
-.burger-menu-btn.open .burger-line:nth-child(1) {
-  transform: rotate(45deg) translateY(11px);
-}
-
-.burger-menu-btn.open .burger-line:nth-child(2) {
-  opacity: 0;
-}
-
-.burger-menu-btn.open .burger-line:nth-child(3) {
-  transform: rotate(-45deg) translateY(-11px);
-}
-
-/* ================= CONTROLS PANEL ================= */
-.controls-panel {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 300px;
-  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
-  border: 2px solid #4a9eff;
-  z-index: 998;
-  padding: 20px;
-  box-sizing: border-box;
-  overflow-y: auto;
-  box-shadow: 2px 0 15px rgba(0, 0, 0, 0.5);
-
-  /* ✅ ALWAYS visible */
-  transform: none;
-}
-
-.controls-panel h1 {
-  color: #4a9eff;
-  font-size: 18px;
-  margin-top: 10px;
-  margin-bottom: 20px;
-  border-bottom: 1px solid #444;
-  padding-bottom: 10px;
-}
-
-/* ================= FILE INPUT SECTION ================= */
-.file-input-section {
-  margin-bottom: 25px;
-}
-
-.file-input-label {
-  display: block;
-  color: #0af;
-  font-weight: bold;
-  font-size: 13px;
-  margin-bottom: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-#file-input {
-  display: block;
-  width: 100%;
-  padding: 10px;
-  margin-bottom: 10px;
-  background: #111;
-  color: #4a9eff;
-  border: 1px solid #333;
-  border-radius: 4px;
-  font-family: monospace;
-  font-size: 12px;
-  cursor: pointer;
-  transition: border-color 0.2s;
-}
-
-#file-input:hover {
-  border-color: #4a9eff;
-}
-
-/* ================= BUTTONS ================= */
-.button-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-button {
-  padding: 12px 16px;
-  background: #2a2a2a;
-  color: #4a9eff;
-  border: 1px solid #4a9eff;
-  border-radius: 6px;
-  font-weight: bold;
-  font-size: 12px;
-  cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  transition: all 0.2s ease;
-}
-
-button:hover {
-  background: #4a9eff;
-  color: #1e1e1e;
-  box-shadow: 0 0 12px rgba(74, 158, 255, 0.4);
-}
-
-button:active {
-  transform: scale(0.98);
-}
-
-#clear-button {
-  background: #4a3030;
-  border-color: #ff6b6b;
-  color: #ff6b6b;
-}
-
-#clear-button:hover {
-  background: #ff6b6b;
-  color: #1e1e1e;
-  box-shadow: 0 0 12px rgba(255, 107, 107, 0.4);
-}
-
-/* ================= LAYOUT ================= */
-.main-content {
-  display: flex;
-  width: 100%;
-  height: 100vh;
-  align-items: center;
-  overflow: hidden;
-  transition: margin-left 0.3s ease;
-}
-
-.main-content.menu-open {
-  margin-left: 300px;
-}
-
-.canvas-container {
-  flex: 1;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-}
-
-/* ================= DOUBLE SLIDER ================= */
-.double-slider-container {
-  display: none;
-  flex-direction: column;
-  align-items: center;
-  width: 60px;
-  height: 100%;
-  background: #2a2a2a;
-  border-radius: 12px;
-  margin-right: 15px;
-  box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
-  padding: 12px 0;
-  box-sizing: border-box;
-}
-
-.double-slider-container.active {
-  display: flex;
-}
-
-.slider-value-input {
-  width: 44px;
-  background: #111;
-  color: #4a9eff;
-  border: 1px solid #333;
-  border-radius: 4px;
-  font-family: monospace;
-  font-size: 12px;
-  font-weight: bold;
-  text-align: center;
-  padding: 4px 2px;
-  box-sizing: border-box;
-  cursor: text;
-}
-
-.slider-value-input:focus {
-  outline: none;
-  border-color: #4a9eff;
-  box-shadow: 0 0 4px rgba(74, 158, 255, 0.4);
-}
-
-.slider-track {
-  position: relative;
-  width: 28px;
-  flex: 1;
-  margin: 10px 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.slider-track-line {
-  position: absolute;
-  top: 0; bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 6px;
-  background: #444;
-  border-radius: 3px;
-  pointer-events: none;
-}
-
-.slider-range {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 6px;
-  background: #4a9eff;
-  border-radius: 3px;
-  box-shadow: 0 0 8px rgba(74, 158, 255, 0.4);
-  pointer-events: none;
-}
-
-.slider-thumb {
-  position: absolute;
-  left: 50%;
-  width: 20px;
-  height: 20px;
-  background: #fff;
-  border: 2px solid #4a9eff;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  cursor: ns-resize;
-  z-index: 2;
-  transition: box-shadow 0.1s, top 0.1s ease-out;
-  box-sizing: border-box;
-}
-
-.slider-thumb:hover,
-.slider-thumb:active {
-  box-shadow: 0 0 0 4px rgba(74, 158, 255, 0.3);
-}
-
-.slider-thumb.thumb-offset-max {
-  background: #e8f4ff;
-  border-color: #4a9eff;
-  opacity: 0.9;
-}
-
-.slider-thumb.thumb-offset-min {
-  background: #b3e5ff;
-  border-color: #4a9eff;
-  opacity: 0.9;
-}
-
-/* ================= RESPONSIVE ================= */
-@media (max-width: 768px) {
-  .controls-panel {
-    width: 100%;
-  }
-
-  .main-content.menu-open {
-    margin-left: 0;
-  }
-}
-
-/* ================= STACK SIZE CONTROLS ================= */
-#stack-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 15px;
-  font-family: 'JetBrains Mono', monospace;
-}
-
-#stack-controls label {
-  color: #0af;
-  font-weight: bold;
-  font-size: 13px;
-  letter-spacing: 0.5px;
-}
-
-#stack-count {
-  width: 60px;
-  padding: 6px 8px;
-  background: #111;
-  color: #4a9eff;
-  border: 1px solid #333;
-  border-radius: 4px;
-  font-family: monospace;
-  font-size: 13px;
-  font-weight: bold;
-  text-align: center;
-  cursor: text;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-#stack-count:focus {
-  outline: none;
-  border-color: #4a9eff;
-  box-shadow: 0 0 6px rgba(74, 158, 255, 0.5);
-}
-
-#enclosing-size-display {
-  padding: 8px 10px;
-  background: #111;
-  border: 1px solid #333;
-  border-radius: 4px;
-  color: #4a9eff;
-  font-family: monospace;
-  font-size: 13px;
-  font-weight: bold;
-  text-align: center;
-  letter-spacing: 0.5px;
-}
-
-/* ================= DRAG & DROP ================= */
-#file-drop-area {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 60px;
-  border: 2px dashed #4a9eff;
-  border-radius: 6px;
-  background: #111;
-  color: #4a9eff;
-  font-size: 13px;
-  font-weight: bold;
-  font-family: monospace;
-  text-align: center;
-  cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
-  user-select: none;
-}
-
-#file-drop-area.hover {
-  background: #1a1a1a;
-  border-color: #0af;
-}
-
-#file-drop-area input[type="file"] {
-  display: none; /* hide the input */
-}
-
-</style>
-
-    <body>
-
-      <!-- ================= CONTROLS PANEL ================= -->
-      <div class="controls-panel" id="controls-panel">
-        <h1>⚙️ Controls</h1>
-
-        <div class="file-input-section" id="file-drop-area">
-          <p>📂 Drag & Drop Litematic here or click to browse</p>
-          <input id="file-input" type="file" accept=".litematic">
-        </div>
-
-        <div class="button-group">
-          <button id="clear-button">🗑️ Clear</button>
-          <button id="download-materials">📥 Download Materials CSV</button>
-          <button id="download-litematic">📦 Download Litematic</button>
-        </div>
-
-        <div id="stack-controls" style="display:none; margin-top:10px;">
-          <label>Stack Count:</label>
-          <input id="stack-count" type="number" min="1" value="1"
+      #gap-controls span {
+           font-size: 12px;
+           color: #888;
+          }         
+      .grid-controls{
+        color: #0af;
+      }
+    </style>
+  <body>
+    <button id="panel-toggle" class="panel-toggle">
+    ❮
+    </button>
+    <!-- ================= CONTROLS PANEL ================= -->
+    <div class="controls-panel" id="controls-panel">
+      <h1>⚙️ Controls</h1>
+      <div class="file-input-section" id="file-drop-area">
+        <p>📂 Drag & Drop Litematic here or click to browse</p>
+        <input id="file-input" type="file" accept=".litematic">
+      </div>
+      <div class="button-group">
+        <button id="clear-button">🗑️ Clear</button>
+        <button id="download-materials">📥 Download Materials CSV</button>
+        <button id="download-litematic">📦 Download Litematic</button>
+      </div>
+      <div style="margin-top:10px;" class="grid-controls">
+        <label>
+        <input type="checkbox" id="toggle-grid" checked>
+        Show Grid
+        </label>
+      </div>
+      <div id="stack-controls" style="display:none; margin-top:10px;">
+        <label>Stack Count:</label>
+        <input id="stack-count" type="number" min="1" value="1"
+          style="width:60px;">
+        <div id="gap-controls" style="display:inline;">
+          <label style="margin-left:12px;">Cluster Gap:</label>
+          <input id="cluster-gap" type="number" min="0" value="0"
             style="width:60px;">
-
-          <div id="gap-controls" style="display:inline;">
-            <label style="margin-left:12px;">Cluster Gap:</label>
-            <input id="cluster-gap" type="number" min="0" value="0"
-              style="width:60px;">
-            <span
-              style="font-size:12px; color: var(--color-text-secondary);">blocks</span>
-          </div>
-
-          <div id="enclosing-size-display" class="enclosing-size"></div>
+          <span
+            style="font-size:12px; color: var(--color-text-secondary);">blocks</span>
         </div>
+        <div id="enclosing-size-display" class="enclosing-size"></div>
       </div>
-
-      <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
-
-      <!-- ================= CANVAS + SLIDER ================= -->
-      <div class="main-content" id="main-content">
-        <div class="canvas-container">
-          <canvas id="structure-display" width="600" height="400"></canvas>
-        </div>
-        <div class="double-slider-container" id="slider-container">
-          <!-- Slider thumbs and range will be inserted here by JS -->
-        </div>
-
+    </div>
+    <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+    <!-- ================= CANVAS + SLIDER ================= -->
+    <div class="main-content" id="main-content">
+      <div class="canvas-container">
+        <canvas id="structure-display" width="600" height="400"></canvas>
       </div>
-
-      <script src="https://unpkg.com/deepslate@0.25.1"></script>
-      <script
-        src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
-      <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
-
-      <script type="module" src="./src/main.js"></script>
-
-      <script>
-const canvas = document.getElementById('structure-display');
-
-function resizeCanvas() {
-  canvas.width = canvas.parentElement.clientWidth;
-  canvas.height = canvas.parentElement.clientHeight;
-}
-
-window.addEventListener('resize', () => {
-  resizeCanvas();
-  if (window.renderer && window.renderer.drawStructure) {
-    renderer.drawStructure();
-  }
-});
-
-resizeCanvas();
-
-</script>
-
-      <script>
-
-  const fileDropArea = document.getElementById('file-drop-area');
-const fileInput = document.getElementById('file-input');
-
-// Open file picker on click
-fileDropArea.addEventListener('click', () => fileInput.click());
-
-// Highlight on drag over
-fileDropArea.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  fileDropArea.classList.add('hover');
-});
-
-// Remove highlight on drag leave
-fileDropArea.addEventListener('dragleave', () => {
-  fileDropArea.classList.remove('hover');
-});
-
-// Handle drop
-fileDropArea.addEventListener('drop', (e) => {
-  e.preventDefault();
-  fileDropArea.classList.remove('hover');
-  
-  const files = e.dataTransfer.files;
-  if (files.length > 0) {
-    handleFile(files[0]);
-  }
-});
-
-// Handle file selection via input
-fileInput.addEventListener('change', (e) => {
-  if (fileInput.files.length > 0) {
-    handleFile(fileInput.files[0]);
-  }
-});
-
-// Your existing file handling function
-function handleFile(file) {
-  console.log('Selected file:', file.name);
-  // Call your existing code to load the Litematic
-}
-</script>
-
-    </body>
-  </html>
+      <div class="double-slider-container" id="slider-container">
+        <!-- Slider thumbs and range will be inserted here by JS -->
+      </div>
+    </div>
+    <script src="https://unpkg.com/deepslate@0.25.1"></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
+    <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+    <script type="module" src="./src/main.js"></script>
+    <script>
+      const canvas = document.getElementById('structure-display');
+      
+      function resizeCanvas() {
+        canvas.width = canvas.parentElement.clientWidth;
+        canvas.height = canvas.parentElement.clientHeight;
+      }
+      
+      window.addEventListener('resize', () => {
+        resizeCanvas();
+        if (window.renderer && window.renderer.drawStructure) {
+          renderer.drawStructure();
+        }
+      });
+      
+      resizeCanvas();
+      
+    </script>
+    <script>
+      const fileDropArea = document.getElementById('file-drop-area');
+      const fileInput = document.getElementById('file-input');
+      
+      // Open file picker on click
+      fileDropArea.addEventListener('click', () => fileInput.click());
+      
+      // Highlight on drag over
+      fileDropArea.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      fileDropArea.classList.add('hover');
+      });
+      
+      // Remove highlight on drag leave
+      fileDropArea.addEventListener('dragleave', () => {
+      fileDropArea.classList.remove('hover');
+      });
+      
+      // Handle drop
+      fileDropArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      fileDropArea.classList.remove('hover');
+      
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        handleFile(files[0]);
+      }
+      });
+      
+      // Handle file selection via input
+      fileInput.addEventListener('change', (e) => {
+      if (fileInput.files.length > 0) {
+        handleFile(fileInput.files[0]);
+      }
+      });
+      
+      // Your existing file handling function
+      function handleFile(file) {
+      console.log('Selected file:', file.name);
+      // Call your existing code to load the Litematic
+      }
+    </script>
+    <script>
+      const panel = document.getElementById('controls-panel');
+      const toggleBtn = document.getElementById('panel-toggle');
+      const mainContent = document.getElementById('main-content');
+      
+      toggleBtn.addEventListener('click', () => {
+        panel.classList.toggle('closed');
+        toggleBtn.classList.toggle('closed');
+        mainContent.classList.toggle('panel-closed');
+      });
+    </script>
+  </body>
+</html>
