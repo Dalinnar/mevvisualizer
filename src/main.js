@@ -6,6 +6,7 @@ import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer } = deepslate;
 import { validateStackingStructure, stackMiddle } from './validate.js';
 
+
 function createProgressDisplay() {
   const div = document.createElement('div');
   div.id = 'progress-display';
@@ -26,32 +27,7 @@ function createProgressDisplay() {
   return div;
 }
 
-// ── NEW: query param helper ────────────────────────────────────────────────
-function getQueryParam(name) {
-  const params = new URLSearchParams(window.location.search);
-  return params.get(name);
-}
 
-// ── NEW: fetch with fallback ───────────────────────────────────────────────
-async function fetchExternalFile(url) {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Direct fetch failed');
-    return await res.arrayBuffer();
-  } catch (err) {
-    console.warn('Direct fetch failed, trying AllOrigins...', err);
-
-    try {
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      const res = await fetch(proxyUrl);
-      if (!res.ok) throw new Error('AllOrigins fetch failed');
-      return await res.arrayBuffer();
-    } catch (err2) {
-      console.error('AllOrigins also failed:', err2);
-      return null;
-    }
-  }
-}
 
 async function init() {
   const blockData = await loadBlockData();
@@ -122,21 +98,20 @@ async function init() {
     const center = ['x', 'y', 'z'].map(k => (bounds[`min${k.toUpperCase()}`] + bounds[`max${k.toUpperCase()}`]) / 2);
 
     currentCamera?.destroy();
-    currentBuilder = builder;
-    currentStructure = structure;
-    currentRenderer = renderer;
+    Object.assign({ currentBuilder: builder, currentStructure: structure, currentRenderer: renderer },
+      (currentBuilder = builder, currentStructure = structure, currentRenderer = renderer, {}));
 
     currentCamera = new InteractiveCanvas(canvas, view => {
       renderer.drawStructure(view);
-      if (showGrid) renderer.drawGrid(view);
+      if (showGrid) {
+        renderer.drawGrid(view);
+      }
     }, center);
 
     if (!slider) {
       slider = new DoubleRangeSlider('slider-container', {
-        min: Math.floor(bounds.minY),
-        max: Math.floor(bounds.maxY),
-        currentMin: Math.floor(bounds.minY),
-        currentMax: Math.floor(bounds.maxY),
+        min: Math.floor(bounds.minY), max: Math.floor(bounds.maxY),
+        currentMin: Math.floor(bounds.minY), currentMax: Math.floor(bounds.maxY),
         onChange: (minY, maxY) => rebuildWithYRange(minY, maxY)
       });
     } else {
@@ -148,7 +123,7 @@ async function init() {
     progressDisplay.style.display = 'none';
   }
 
-  // ── Main render ────────────────────────────────────────────────────────────
+  // ── Main render entry point ────────────────────────────────────────────────
   async function renderStructure(nbt, stackSize = null, gap = 0) {
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = stackSize ? 'Stacking...' : 'Loading structure...';
@@ -171,14 +146,62 @@ async function init() {
     await buildAndRender(builder, root.get("Regions"), w, h, d);
   }
 
-  // ── NEW: shared buffer handler ─────────────────────────────────────────────
-  async function handleArrayBuffer(buffer) {
-    progressDisplay.style.display = 'block';
-    progressDisplay.textContent = 'Parsing NBT...';
+  // ── Shared stack re-render ─────────────────────────────────────────────────
+  const rerender = async () => {
+    if (!originalBuffer) return;
+    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
+    const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);
+    await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), stackSize, gap);
+  };
+
+  // ── Fetch from external URL (with allorigins fallback) ────────────────────
+  async function fetchExternalFile(url) {
+    // First attempt: direct fetch
+    try {
+      progressDisplay.style.display = 'block';
+      progressDisplay.textContent = 'Fetching file...';
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.arrayBuffer();
+    } catch (directErr) {
+      console.warn('Direct fetch failed, trying allorigins...', directErr);
+    }
+
+    // Second attempt: allorigins proxy
+    try {
+      progressDisplay.textContent = 'Fetching via proxy...';
+      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+      const response = await fetch(proxyUrl);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.arrayBuffer();
+    } catch (proxyErr) {
+      console.warn('Allorigins fetch failed.', proxyErr);
+    }
+
+    // Both failed
+    progressDisplay.style.display = 'none';
+    alert(
+      `Failed to fetch the file from the provided URL.\n\n` +
+      `Both direct and proxy attempts failed.\n\n` +
+      `Please add the file manually using the file input.`
+    );
+    return null;
+  }
+
+  // ── Load from ?ext_link= URL parameter ────────────────────────────────────
+  async function loadFromExtLink() {
+    const params = new URLSearchParams(window.location.search);
+    const extLink = params.get('ext_link');
+    if (!extLink) return;
+
+    const buffer = await fetchExternalFile(extLink);
+    if (!buffer) return;
 
     originalBuffer = buffer;
 
-    const nbt = deepslate.NbtFile.read(new Uint8Array(buffer));
+    progressDisplay.style.display = 'block';
+    progressDisplay.textContent = 'Parsing NBT...';
+    const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     const validation = validateStackingStructure(nbt);
 
     if (validation.isValid) {
@@ -189,22 +212,14 @@ async function init() {
       const hasMultipleClusters = validation.details.clusterCount > 1;
       document.getElementById('gap-controls').style.display = hasMultipleClusters ? '' : 'none';
 
-      await renderStructure(deepslate.NbtFile.read(new Uint8Array(buffer)), 1, 0);
+      await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), 1, 0);
     } else {
       document.getElementById('stack-controls').style.display = 'none';
       await renderStructure(nbt);
     }
   }
 
-  // ── Shared rerender ────────────────────────────────────────────────────────
-  const rerender = async () => {
-    if (!originalBuffer) return;
-    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
-    const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);
-    await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), stackSize, gap);
-  };
-
-  // ── Events ────────────────────────────────────────────────────────────────
+  // ── Event listeners ────────────────────────────────────────────────────────
   document.getElementById('stack-count').addEventListener('change', rerender);
   document.getElementById('cluster-gap').addEventListener('change', rerender);
 
@@ -231,7 +246,7 @@ async function init() {
 
   document.getElementById('toggle-grid').addEventListener('change', (e) => {
     showGrid = e.target.checked;
-    currentCamera?.redraw();
+    currentCamera?.redraw(); // force re-render
   });
 
   document.getElementById('download-litematic').addEventListener('click', () => {
@@ -247,28 +262,30 @@ async function init() {
 
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Reading file...';
+    originalBuffer = await file.arrayBuffer();
 
-    const buffer = await file.arrayBuffer();
-    await handleArrayBuffer(buffer);
+    progressDisplay.textContent = 'Parsing NBT...';
+    const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+    const validation = validateStackingStructure(nbt);
+
+    if (validation.isValid) {
+      document.getElementById('stack-controls').style.display = 'block';
+      document.getElementById('stack-count').value = 1;
+      document.getElementById('cluster-gap').value = 0;
+
+      // Show gap controls only when there are multiple clusters
+      const hasMultipleClusters = validation.details.clusterCount > 1;
+      document.getElementById('gap-controls').style.display = hasMultipleClusters ? '' : 'none';
+
+      await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), 1, 0);
+    } else {
+      document.getElementById('stack-controls').style.display = 'none';
+      await renderStructure(nbt);
+    }
   });
 
-  // ── NEW: auto-load from ?ext_link ──────────────────────────────────────────
-  const extLink = getQueryParam('ext_link');
-
-  if (extLink) {
-    progressDisplay.style.display = 'block';
-    progressDisplay.textContent = 'Loading external file...';
-
-    const buffer = await fetchExternalFile(extLink);
-
-    if (!buffer) {
-      progressDisplay.style.display = 'none';
-      alert('Unable to load the file from URL. Please drag & drop it manually.');
-      return;
-    }
-
-    await handleArrayBuffer(buffer);
-  }
+  // ── Auto-load from URL param if present ───────────────────────────────────
+  await loadFromExtLink();
 }
 
 init();
