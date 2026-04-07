@@ -37,27 +37,29 @@ async function init() {
   const gl = canvas.getContext('webgl');
   const progressDisplay = document.getElementById('progress-display') || createProgressDisplay();
 
-  await resourceLoader.load(blockData, (info) => {
-    progressDisplay.textContent = `${info.stage} ${info.percent}%`;
+  await resourceLoader.load(blockData, ({ stage, percent }) => {
+    progressDisplay.textContent = `${stage} ${percent}%`;
   });
   progressDisplay.style.display = 'none';
 
   const resources = resourceLoader.getResources();
 
-  let currentStructure = null;
-  let currentRenderer = null;
-  let currentCamera = null;
-  let currentBuilder = null;
-  let slider = null;
-  let originalBuffer = null;
-  let lastStackedNbt = null;
+  let currentStructure = null, currentRenderer = null, currentCamera = null,
+    currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null;
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const getEnclosing = (root) => {
+    const enc = root.get("Metadata").get("EnclosingSize");
+    const n = k => Math.abs(Number(enc.get(k).value ?? enc.get(k)));
+    return { w: n("x"), h: n("y"), d: n("z") };
+  };
 
   function rebuildWithYRange(minY, maxY) {
     if (!currentBuilder) return;
     currentStructure = currentBuilder.buildStructure(minY, maxY);
     if (currentRenderer) {
       currentRenderer.setStructure(currentStructure);
-      if (currentCamera) currentCamera.redraw();
+      currentCamera?.redraw();
     }
   }
 
@@ -67,10 +69,7 @@ async function init() {
       const data = nbtFile.write();
       const blob = new Blob([data], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
+      Object.assign(document.createElement('a'), { href: url, download: filename }).click();
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error(err);
@@ -78,37 +77,38 @@ async function init() {
     }
   }
 
-  // ── Shared helper: build + render a StructureBuilder into the canvas ───────
-  async function renderBuilder(builder) {
+  async function buildAndRender(builder, regions, w, h, d) {
+    const regionNames = Array.from(regions.keys());
+    for (let i = 0; i < regionNames.length; i++) {
+      progressDisplay.textContent = `Processing region ${i + 1}/${regionNames.length}...`;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const regionData = create3DBlocks(regions.get(regionNames[i]));
+      builder.addRegionBlocks(regionNames[i], regionData);
+      if (regionData.blockIds?.length > 100000) regionData.blockIds = null;
+    }
+
     progressDisplay.textContent = 'Building structure...';
     const structure = builder.buildStructure();
-
     const renderer = new StructureRenderer(gl, structure, resources, {
-      useInvisibleBlockBuffer: false,
-      chunkSize: 16
+      useInvisibleBlockBuffer: false, chunkSize: 16
     });
 
     const bounds = builder.getActualBounds();
-    const center = [
-      (bounds.minX + bounds.maxX) / 2,
-      (bounds.minY + bounds.maxY) / 2,
-      (bounds.minZ + bounds.maxZ) / 2
-    ];
+    const center = ['x', 'y', 'z'].map(k => (bounds[`min${k.toUpperCase()}`] + bounds[`max${k.toUpperCase()}`]) / 2);
 
-    if (currentCamera) currentCamera.destroy();
+    currentCamera?.destroy();
+    Object.assign({ currentBuilder: builder, currentStructure: structure, currentRenderer: renderer },
+      (currentBuilder = builder, currentStructure = structure, currentRenderer = renderer, {}));
 
-    currentBuilder = builder;
-    currentStructure = structure;
-    currentRenderer = renderer;
-
-    currentCamera = new InteractiveCanvas(canvas, view => renderer.drawStructure(view), center);
+    currentCamera = new InteractiveCanvas(canvas, view => {
+      renderer.drawStructure(view);
+      renderer.drawOutline(view,center);
+    }, center);
 
     if (!slider) {
       slider = new DoubleRangeSlider('slider-container', {
-        min: Math.floor(bounds.minY),
-        max: Math.floor(bounds.maxY),
-        currentMin: Math.floor(bounds.minY),
-        currentMax: Math.floor(bounds.maxY),
+        min: Math.floor(bounds.minY), max: Math.floor(bounds.maxY),
+        currentMin: Math.floor(bounds.minY), currentMax: Math.floor(bounds.maxY),
         onChange: (minY, maxY) => rebuildWithYRange(minY, maxY)
       });
     } else {
@@ -120,154 +120,94 @@ async function init() {
     progressDisplay.style.display = 'none';
   }
 
-  // ── Shared helper: fill a StructureBuilder from an NBT regions map ─────────
-  async function fillBuilder(builder, regions) {
-    const regionNames = Array.from(regions.keys());
-    for (let i = 0; i < regionNames.length; i++) {
-      progressDisplay.textContent = `Processing region ${i + 1}/${regionNames.length}...`;
-      await new Promise(resolve => setTimeout(resolve, 0));
+  // ── Main render entry point ────────────────────────────────────────────────
+  async function renderStructure(nbt, stackSize = null, gap = 0) {
+    progressDisplay.style.display = 'block';
+    progressDisplay.textContent = stackSize ? 'Stacking...' : 'Loading structure...';
 
-      const region = regions.get(regionNames[i]);
-      const regionData = create3DBlocks(region);
-      builder.addRegionBlocks(regionNames[i], regionData);
+    let root = nbt.root || nbt;
+    lastStackedNbt = null;
 
-      if (regionData.blockIds && regionData.blockIds.length > 100000) {
-        regionData.blockIds = null;
-      }
+    if (stackSize) {
+      const stacked = stackMiddle(nbt, stackSize, gap);
+      lastStackedNbt = stacked;
+      root = stacked.root;
     }
+
+    const { w, h, d } = getEnclosing(root);
+    if (stackSize) {
+      document.getElementById('enclosing-size-display').textContent = `Size: ${w} x ${h} x ${d}`;
+    }
+
+    const builder = new StructureBuilder(w, h, d);
+    await buildAndRender(builder, root.get("Regions"), w, h, d);
   }
 
-  // ── Render a stackable structure (calls stackMiddle) ───────────────────────
-  async function renderNbt(nbt, stackSize, gap = 0) {
-    progressDisplay.style.display = 'block';
-    progressDisplay.textContent = 'Stacking...';
+  // ── Shared stack re-render ─────────────────────────────────────────────────
+  const rerender = async () => {
+    if (!originalBuffer) return;
+    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
+    const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);
+    await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), stackSize, gap);
+  };
 
-    const stacked = stackMiddle(nbt, stackSize, gap);
-    lastStackedNbt = stacked;
+  // ── Event listeners ────────────────────────────────────────────────────────
+  document.getElementById('stack-count').addEventListener('change', rerender);
+  document.getElementById('cluster-gap').addEventListener('change', rerender);
 
-    const metadata = stacked.root.get("Metadata");
-    const enclosing = metadata.get("EnclosingSize");
-
-    const totalW = Math.abs(Number(enclosing.get("x").value ?? enclosing.get("x")));
-    const totalH = Math.abs(Number(enclosing.get("y").value ?? enclosing.get("y")));
-    const totalD = Math.abs(Number(enclosing.get("z").value ?? enclosing.get("z")));
-
-    console.log("enclosing_size: ", totalD, totalH, totalW);
-    document.getElementById('enclosing-size-display').textContent =
-      `Size: ${totalW} x ${totalH} x ${totalD}`;
-
-    const regions = stacked.root.get("Regions");
-    const builder = new StructureBuilder(totalW, totalH, totalD);
-
-    await fillBuilder(builder, regions);
-    await renderBuilder(builder);
-  }
-
-  // ── Render a non-stackable structure as-is ─────────────────────────────────
-  async function renderRaw(nbt) {
-    progressDisplay.style.display = 'block';
-    progressDisplay.textContent = 'Loading structure...';
-
-    lastStackedNbt = null;
-
-    const root = nbt.root || nbt;
-    const metadata = root.get("Metadata");
-    const enclosing = metadata.get("EnclosingSize");
-
-    const totalW = Math.abs(Number(enclosing.get("x").value ?? enclosing.get("x")));
-    const totalH = Math.abs(Number(enclosing.get("y").value ?? enclosing.get("y")));
-    const totalD = Math.abs(Number(enclosing.get("z").value ?? enclosing.get("z")));
-
-    const regions = root.get("Regions");
-    const builder = new StructureBuilder(totalW, totalH, totalD);
-
-    await fillBuilder(builder, regions);
-    await renderBuilder(builder);
-  }
-
-  // ── Clear button ───────────────────────────────────────────────────────────
   document.getElementById('clear-button').addEventListener('click', () => {
-    if (currentCamera) currentCamera.destroy();
-    if (gl) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
+    currentCamera?.destroy();
+    gl?.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
-    originalBuffer = null;
-    lastStackedNbt = null;
-
+    originalBuffer = lastStackedNbt = null;
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
     document.getElementById('stack-controls').style.display = 'none';
+    document.getElementById('gap-controls').style.display = 'none';
     document.getElementById('stack-count').value = 1;
     document.getElementById('cluster-gap').value = 0;
-
-
   });
 
-  // ── Download materials CSV ─────────────────────────────────────────────────
   document.getElementById('download-materials').addEventListener('click', () => {
     if (!currentBuilder) return alert("No structure loaded!");
-    const csv = currentBuilder.generateMaterialsCSV();
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([currentBuilder.generateMaterialsCSV()], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'materials_list.csv';
-    a.click();
+    Object.assign(document.createElement('a'), { href: url, download: 'materials_list.csv' }).click();
     URL.revokeObjectURL(url);
   });
 
-  // ── Download litematic ─────────────────────────────────────────────────────
   document.getElementById('download-litematic').addEventListener('click', () => {
     if (!lastStackedNbt) return alert("No stacked structure to download!");
     const stackSize = document.getElementById('stack-count').value || 1;
     const gap = document.getElementById('cluster-gap').value || 0;
-    downloadLitematic(lastStackedNbt, `stacked_${stackSize}x_gap${gap}.litematic`);  // <-- gap in filename
-  });
-  // ── Stack count change ─────────────────────────────────────────────────────
-  document.getElementById('stack-count').addEventListener('change', async e => {
-    if (!originalBuffer) return;
-    const stackSize = Math.max(1, parseInt(e.target.value) || 1);
-    const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);  // <-- read gap
-    const freshNbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
-    await renderNbt(freshNbt, stackSize, gap);
+    downloadLitematic(lastStackedNbt, `stacked_${stackSize}x_gap${gap}.litematic`);
   });
 
-  // ── Cluster gap change ─────────────────────────────────────────────────────
-  document.getElementById('cluster-gap').addEventListener('change', async e => {
-    if (!originalBuffer) return;
-    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
-    const gap = Math.max(0, parseInt(e.target.value) || 0);
-    const freshNbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
-    await renderNbt(freshNbt, stackSize, gap);
-  });
-
-  // ── File input ─────────────────────────────────────────────────────────────
   document.getElementById('file-input').addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;
 
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Reading file...';
-
     originalBuffer = await file.arrayBuffer();
 
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
-
     const validation = validateStackingStructure(nbt);
 
     if (validation.isValid) {
-      // Stackable: show stack controls and render with stackMiddle
       document.getElementById('stack-controls').style.display = 'block';
       document.getElementById('stack-count').value = 1;
       document.getElementById('cluster-gap').value = 0;
 
-      const freshNbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
-      await renderNbt(freshNbt, 1, 0);
+      // Show gap controls only when there are multiple clusters
+      const hasMultipleClusters = validation.details.clusterCount > 1;
+      document.getElementById('gap-controls').style.display = hasMultipleClusters ? '' : 'none';
+
+      await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), 1, 0);
     } else {
-      // Not stackable: hide stack controls and render as-is
       document.getElementById('stack-controls').style.display = 'none';
-      await renderRaw(nbt);
+      await renderStructure(nbt);
     }
   });
 }
