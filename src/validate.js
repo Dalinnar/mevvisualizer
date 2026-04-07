@@ -1,28 +1,31 @@
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function nbtNum(node) {
+    return Number(node.value ?? node);
+}
+
 function localToWorld(position, size) {
-    const originX = size.x >= 0 ? position.x : position.x + size.x;
-    const originY = size.y >= 0 ? position.y : position.y + size.y;
-    const originZ = size.z >= 0 ? position.z : position.z + size.z;
-    const absX = Math.abs(size.x);
-    const absY = Math.abs(size.y);
-    const absZ = Math.abs(size.z);
-    const endX = originX + absX - 1;
-    const endY = originY + absY - 1;
-    const endZ = originZ + absZ - 1;
+    const ox = size.x >= 0 ? position.x : position.x + size.x;
+    const oy = size.y >= 0 ? position.y : position.y + size.y;
+    const oz = size.z >= 0 ? position.z : position.z + size.z;
+    const ax = Math.abs(size.x);
+    const ay = Math.abs(size.y);
+    const az = Math.abs(size.z);
     return {
-        origin: { x: originX, y: originY, z: originZ },
-        end: { x: endX, y: endY, z: endZ },
-        size: { x: absX, y: absY, z: absZ },
-        bounds: { minX: originX, maxX: endX, minY: originY, maxY: endY, minZ: originZ, maxZ: endZ }
+        origin: { x: ox, y: oy, z: oz },
+        end:    { x: ox + ax - 1, y: oy + ay - 1, z: oz + az - 1 },
+        size:   { x: ax, y: ay, z: az },
+        bounds: { minX: ox, maxX: ox + ax - 1, minY: oy, maxY: oy + ay - 1, minZ: oz, maxZ: oz + az - 1 }
     };
 }
 
 function getLitematicOrigin(regions) {
     let minX = Infinity, minY = Infinity, minZ = Infinity;
-    for (const region of regions) {
-        const w = localToWorld(region.position, region.size);
-        minX = Math.min(minX, w.origin.x);
-        minY = Math.min(minY, w.origin.y);
-        minZ = Math.min(minZ, w.origin.z);
+    for (const { position, size } of regions) {
+        const { origin } = localToWorld(position, size);
+        if (origin.x < minX) minX = origin.x;
+        if (origin.y < minY) minY = origin.y;
+        if (origin.z < minZ) minZ = origin.z;
     }
     return { x: minX, y: minY, z: minZ };
 }
@@ -31,18 +34,24 @@ function getLitematicBounds(regions) {
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
     let minZ = Infinity, maxZ = -Infinity;
-    for (const region of regions) {
-        const w = localToWorld(region.position, region.size);
-        minX = Math.min(minX, w.bounds.minX); maxX = Math.max(maxX, w.bounds.maxX);
-        minY = Math.min(minY, w.bounds.minY); maxY = Math.max(maxY, w.bounds.maxY);
-        minZ = Math.min(minZ, w.bounds.minZ); maxZ = Math.max(maxZ, w.bounds.maxZ);
+    for (const { position, size } of regions) {
+        const { bounds: b } = localToWorld(position, size);
+        if (b.minX < minX) minX = b.minX; if (b.maxX > maxX) maxX = b.maxX;
+        if (b.minY < minY) minY = b.minY; if (b.maxY > maxY) maxY = b.maxY;
+        if (b.minZ < minZ) minZ = b.minZ; if (b.maxZ > maxZ) maxZ = b.maxZ;
     }
     return {
         origin: { x: minX, y: minY, z: minZ },
-        end: { x: maxX, y: maxY, z: maxZ },
-        size: { x: maxX - minX + 1, y: maxY - minY + 1, z: maxZ - minZ + 1 }
+        end:    { x: maxX, y: maxY, z: maxZ },
+        size:   { x: maxX - minX + 1, y: maxY - minY + 1, z: maxZ - minZ + 1 }
     };
 }
+
+function deepCloneNbtCompound(compound) {
+    return deepslate.NbtCompound.fromJson(compound.toJson());
+}
+
+// ── Validation ────────────────────────────────────────────────────────────────
 
 export function validateStackingStructure(nbt) {
     const result = {
@@ -80,300 +89,283 @@ export function validateStackingStructure(nbt) {
 
     for (const name of regionNames) {
         const region = regions.get(name);
-        const pos = region.get("Position");
+        const pos  = region.get("Position");
         const size = region.get("Size");
 
-        const posX = Number(pos.get("x").value ?? pos.get("x"));
-        const posY = Number(pos.get("y").value ?? pos.get("y"));
-        const posZ = Number(pos.get("z").value ?? pos.get("z"));
-        const sizeX = Number(size.get("x").value ?? size.get("x"));
-        const sizeY = Number(size.get("y").value ?? size.get("y"));
-        const sizeZ = Number(size.get("z").value ?? size.get("z"));
+        const position = {
+            x: nbtNum(pos.get("x")),
+            y: nbtNum(pos.get("y")),
+            z: nbtNum(pos.get("z")),
+        };
+        const sz = {
+            x: nbtNum(size.get("x")),
+            y: nbtNum(size.get("y")),
+            z: nbtNum(size.get("z")),
+        };
 
-        const worldCoords = localToWorld(
-            { x: posX, y: posY, z: posZ },
-            { x: sizeX, y: sizeY, z: sizeZ }
-        );
+        const worldCoords = localToWorld(position, sz);
+        const { bounds: b } = worldCoords;
 
         regionDataArray.push({
-            name, posX, posY, posZ, sizeX, sizeY, sizeZ,
-            absX: Math.abs(sizeX), absY: Math.abs(sizeY), absZ: Math.abs(sizeZ),
-            ...worldCoords.bounds,
-            worldCoords
-        });
-
-        result.regions.push({
             name,
-            position: { x: posX, y: posY, z: posZ },
-            size: { x: sizeX, y: sizeY, z: sizeZ },
-            worldCoordinates: worldCoords
+            posX: position.x, posY: position.y, posZ: position.z,
+            sizeX: sz.x, sizeY: sz.y, sizeZ: sz.z,
+            absX: Math.abs(sz.x), absY: Math.abs(sz.y), absZ: Math.abs(sz.z),
+            minX: b.minX, maxX: b.maxX,
+            minY: b.minY, maxY: b.maxY,
+            minZ: b.minZ, maxZ: b.maxZ,
+            worldCoords,
         });
 
+        result.regions.push({ name, position, size: sz, worldCoordinates: worldCoords });
         result.worldCoordinates[name] = worldCoords;
     }
 
-    result.litematicOrigin = getLitematicOrigin(result.regions.map(r => ({ position: r.position, size: r.size })));
-    result.litematicBounds = getLitematicBounds(result.regions.map(r => ({ position: r.position, size: r.size })));
+    const regionsMeta = result.regions.map(r => ({ position: r.position, size: r.size }));
+    result.litematicOrigin = getLitematicOrigin(regionsMeta);
+    result.litematicBounds = getLitematicBounds(regionsMeta);
 
     // ── All regions must share the same Y band ───────────────────────────────
 
-    const firstRegion = regionDataArray[0];
-    const allSameY = regionDataArray.every(r =>
-        r.minY === firstRegion.minY && r.maxY === firstRegion.maxY
-    );
-
-    if (!allSameY) {
+    const { minY: refMinY, maxY: refMaxY } = regionDataArray[0];
+    if (!regionDataArray.every(r => r.minY === refMinY && r.maxY === refMaxY)) {
         result.errors.push("All regions must have the same Y position and height");
         return result;
     }
 
-    // ── Detect stacking axis by trying both and seeing which works ───────────
-    // Strategy: for each candidate stack axis, group regions by their position
-    // on the OTHER axis (parallel axis). A valid grouping means every cluster
-    // has >= 3 members and is adjacent along the stack axis.
+    // ── Detect stacking axis ─────────────────────────────────────────────────
+    // For each candidate stride axis, group regions into clusters that OVERLAP
+    // on the parallel axis, then verify each cluster is contiguous along stride.
 
     function tryAxis(strideAxis) {
-        const parallelAxis = strideAxis === 'x' ? 'z' : 'x';
-        const minKey = parallelAxis === 'x' ? 'minX' : 'minZ';
-        const maxKey = parallelAxis === 'x' ? 'maxX' : 'maxZ';
+        const minKey = strideAxis === 'x' ? 'minZ' : 'minX';
+        const maxKey = strideAxis === 'x' ? 'maxZ' : 'maxX';
+        const strideMin = strideAxis === 'x' ? 'minX' : 'minZ';
+        const strideMax = strideAxis === 'x' ? 'maxX' : 'maxZ';
 
-        // Group regions that OVERLAP on the parallel axis into the same cluster.
-        // We do a simple union-find: merge any two regions whose parallel ranges overlap.
         const clusters = [];
 
         for (const r of regionDataArray) {
-            const rMin = r[minKey];
-            const rMax = r[maxKey];
-
-            // Find an existing cluster that overlaps with this region on the parallel axis
-            const matchIndex = clusters.findIndex(cluster =>
-                cluster.some(c => c[minKey] <= rMax && c[maxKey] >= rMin)
+            const rMin = r[minKey], rMax = r[maxKey];
+            const idx = clusters.findIndex(c =>
+                c.some(m => m[minKey] <= rMax && m[maxKey] >= rMin)
             );
-
-            if (matchIndex !== -1) {
-                clusters[matchIndex].push(r);
-            } else {
-                clusters.push([r]);
-            }
+            if (idx !== -1) clusters[idx].push(r);
+            else clusters.push([r]);
         }
 
-        // Every cluster must have >= 3 regions AND be adjacent along the stride axis
         for (const cluster of clusters) {
             if (cluster.length < 3) return null;
-
-            const sorted = [...cluster].sort((a, b) =>
-                strideAxis === 'x' ? a.minX - b.minX : a.minZ - b.minZ
-            );
-            for (let i = 0; i < sorted.length - 1; i++) {
-                const gap = strideAxis === 'x'
-                    ? sorted[i + 1].minX - sorted[i].maxX - 1
-                    : sorted[i + 1].minZ - sorted[i].maxZ - 1;
-                if (gap > 0) return null;
+            cluster.sort((a, b) => a[strideMin] - b[strideMin]);
+            for (let i = 0; i < cluster.length - 1; i++) {
+                if (cluster[i + 1][strideMin] - cluster[i][strideMax] > 1) return null;
             }
         }
 
-        // Convert back to a Map keyed by cluster index for compatibility
-        const clusterMap = new Map();
-        clusters.forEach((cluster, i) => clusterMap.set(i, cluster));
-        return clusterMap;
+        return clusters;
     }
-
-    let strideAxis = null;
-    let parallelAxis = null;
-    let clusterMap = null;
 
     const tryX = tryAxis('x');
     const tryZ = tryAxis('z');
 
+    let strideAxis, clusters;
+
     if (tryX && tryZ) {
-        // Both work — pick the one with more clusters (more parallel lanes)
-        // or just default to z since that's the most common stacking direction
-        clusterMap = tryZ.size >= tryX.size ? tryZ : tryX;
-        strideAxis = tryZ.size >= tryX.size ? 'z' : 'x';
-        parallelAxis = strideAxis === 'x' ? 'z' : 'x';
+        const useZ = tryZ.length >= tryX.length;
+        strideAxis = useZ ? 'z' : 'x';
+        clusters   = useZ ? tryZ : tryX;
         result.warnings.push("Both X and Z axes are valid stacking axes; defaulting to Z");
-    } else if (tryX) {
-        strideAxis = 'x';
-        parallelAxis = 'z';
-        clusterMap = tryX;
     } else if (tryZ) {
-        strideAxis = 'z';
-        parallelAxis = 'x';
-        clusterMap = tryZ;
+        strideAxis = 'z'; clusters = tryZ;
+    } else if (tryX) {
+        strideAxis = 'x'; clusters = tryX;
     } else {
         result.errors.push("Could not determine a valid stacking axis. Ensure each parallel cluster has at least 3 adjacent regions.");
         return result;
     }
 
-    // Preserve sign from the actual region size for downstream code
-    result.stackAxis = firstRegion[`size${strideAxis.toUpperCase()}`] >= 0
+    const parallelAxis = strideAxis === 'x' ? 'z' : 'x';
+
+    result.stackAxis = regionDataArray[0][`size${strideAxis.toUpperCase()}`] >= 0
         ? strideAxis
         : `${strideAxis}-`;
 
-    // ── Validate each cluster and build details ───────────────────────────────
+    // ── Build details ─────────────────────────────────────────────────────────
 
-    const allSortedNames = [];
-    const clusterDetails = [];
-    let hasErrors = false;
+    const allSortedNames  = [];
+    const clusterDetails  = [];
+    const strideMin       = strideAxis === 'x' ? 'minX' : 'minZ';
+    const clusterMap      = new Map();
 
-    for (const [parallelCoord, cluster] of clusterMap) {
-        const sorted = [...cluster].sort((a, b) =>
-            strideAxis === 'x' ? a.minX - b.minX : a.minZ - b.minZ
-        );
-
-        // Uniform size within cluster
-        //const refWidth = sorted[0].absX;
-        //const refDepth = sorted[0].absZ;
-        //if (!sorted.every(r => r.absX === refWidth && r.absZ === refDepth)) {
-        //    result.errors.push(
-        //        `Cluster at ${parallelAxis}=${parallelCoord} has regions with inconsistent sizes`
-        //    );
-        //    hasErrors = true;
-        //    continue;
-        //}
-
-        allSortedNames.push(...sorted.map(r => r.name));
+    clusters.forEach((cluster, i) => {
+        cluster.sort((a, b) => a[strideMin] - b[strideMin]);
+        const names = cluster.map(r => r.name);
+        allSortedNames.push(...names);
         clusterDetails.push({
-            parallelCoord,
-            names: sorted.map(r => r.name),
-            firstName: sorted[0].name,
-            lastName: sorted[sorted.length - 1].name,
-            middleNames: sorted.slice(1, -1).map(r => r.name),
+            parallelCoord: i,
+            names,
+            firstName:   names[0],
+            lastName:    names[names.length - 1],
+            middleNames: names.slice(1, -1),
         });
-    }
-
-    if (hasErrors) return result;
+        clusterMap.set(i, cluster);
+    });
 
     result.details.sortedRegions = allSortedNames;
-    result.details.clusters = clusterDetails;
-    result.details.clusterCount = clusterDetails.length;
+    result.details.clusters      = clusterDetails;
+    result.details.clusterCount  = clusterDetails.length;
     result.isValid = true;
 
     return result;
 }
 
+// ── Stacking ──────────────────────────────────────────────────────────────────
 
-function deepCloneNbtCompound(compound) {
-    return deepslate.NbtCompound.fromJson(compound.toJson());
-}
-
-export function stackMiddle(nbt, stackSize) {
+export function stackMiddle(nbt, stackSize, gap = 0) {
     const validation = validateStackingStructure(nbt);
     if (!validation.isValid) {
         throw new Error(`Cannot stack invalid structure: ${validation.errors.join('; ')}`);
     }
 
     const { stackAxis, details } = validation;
-    const root = nbt.root || nbt;
+    const root    = nbt.root || nbt;
     const regions = root.get("Regions");
-    const strideAxis = stackAxis.startsWith('x') ? 'x' : 'z';
 
+    const strideAxis   = stackAxis.startsWith('x') ? 'x' : 'z';
+    const parallelAxis = strideAxis === 'x' ? 'z' : 'x';
+
+    // Read a Position/Size vec3 from an NBT region entry
     function readVec3(entry, tag) {
         const v = entry.get(tag);
         return {
-            x: Number(v.get("x").value ?? v.get("x")),
-            y: Number(v.get("y").value ?? v.get("y")),
-            z: Number(v.get("z").value ?? v.get("z")),
+            x: nbtNum(v.get("x")),
+            y: nbtNum(v.get("y")),
+            z: nbtNum(v.get("z")),
         };
     }
 
+    // Clone an entry and overwrite its Position
     function cloneWithPosition(sourceEntry, newPos) {
         const cloned = deepCloneNbtCompound(sourceEntry);
         const pos = cloned.get("Position");
-        pos.get("x").value !== undefined
-            ? (pos.get("x").value = newPos.x) : pos.set("x", newPos.x);
-        pos.get("y").value !== undefined
-            ? (pos.get("y").value = newPos.y) : pos.set("y", newPos.y);
-        pos.get("z").value !== undefined
-            ? (pos.get("z").value = newPos.z) : pos.set("z", newPos.z);
+        for (const axis of ['x', 'y', 'z']) {
+            const node = pos.get(axis);
+            node.value !== undefined ? (node.value = newPos[axis]) : pos.set(axis, newPos[axis]);
+        }
         return cloned;
     }
 
-    const newRegions = new Map();
+    // Compute the local-space position after shifting the parallel axis origin
+    function shiftedPos(originalPos, originalSize, shift) {
+        const world  = localToWorld(originalPos, originalSize);
+        const offset = {
+            x: originalPos.x - world.origin.x,
+            y: originalPos.y - world.origin.y,
+            z: originalPos.z - world.origin.z,
+        };
+        return {
+            x: world.origin.x + offset.x + (parallelAxis === 'x' ? shift : 0),
+            y: world.origin.y + offset.y,
+            z: world.origin.z + offset.z + (parallelAxis === 'z' ? shift : 0),
+        };
+    }
 
-    for (const { firstName, middleNames, lastName } of details.clusters) {
-        if (!middleNames || middleNames.length === 0) {
+    // Sort clusters by their first region's parallel-axis world origin
+    const sortedClusters = [...details.clusters].sort((a, b) => {
+        function parallelOrigin(name) {
+            const entry = regions.get(name);
+            return localToWorld(readVec3(entry, "Position"), readVec3(entry, "Size")).origin[parallelAxis];
+        }
+        return parallelOrigin(a.firstName) - parallelOrigin(b.firstName);
+    });
+
+    const newRegions     = new Map();
+    let cumulativeShift  = 0;
+
+    for (const { firstName, middleNames, lastName } of sortedClusters) {
+        if (!middleNames?.length) {
             throw new Error(`Cluster starting with "${firstName}" has no middle regions to stack`);
         }
 
-        // 1. Keep "first" as-is
-        newRegions.set(firstName, regions.get(firstName));
+        const shift = cumulativeShift;
 
-        // Stride = size of first middle along the stack axis
-        const firstMiddleEntry = regions.get(middleNames[0]);
-        const firstMiddleSize = readVec3(firstMiddleEntry, "Size");
-        const stride = Math.abs(firstMiddleSize[strideAxis]);
-
-        // Start coord: right after "first" ends
+        // ── First region ──────────────────────────────────────────────────────
         const firstEntry = regions.get(firstName);
-        const firstPos = readVec3(firstEntry, "Position");
-        const firstSize = readVec3(firstEntry, "Size");
+        const firstPos   = readVec3(firstEntry, "Position");
+        const firstSize  = readVec3(firstEntry, "Size");
         const firstWorld = localToWorld(firstPos, firstSize);
+
+        newRegions.set(firstName, cloneWithPosition(firstEntry, shiftedPos(firstPos, firstSize, shift)));
+
+        // Stride = width of first middle region along the stride axis
+        const firstMidEntry = regions.get(middleNames[0]);
+        const stride = Math.abs(readVec3(firstMidEntry, "Size")[strideAxis]);
+
         let coord = firstWorld.end[strideAxis] + 1;
 
-        // 2. Emit stackSize copies of each middle
+        // ── Middle copies ─────────────────────────────────────────────────────
         for (let copy = 0; copy < stackSize; copy++) {
             for (const midName of middleNames) {
                 const midEntry = regions.get(midName);
-                const midPos = readVec3(midEntry, "Position");
-                const midSize = readVec3(midEntry, "Size");
+                const midPos   = readVec3(midEntry, "Position");
+                const midSize  = readVec3(midEntry, "Size");
                 const midWorld = localToWorld(midPos, midSize);
 
-                const offset = {
-                    x: midPos.x - midWorld.origin.x,
-                    y: midPos.y - midWorld.origin.y,
-                    z: midPos.z - midWorld.origin.z,
-                };
-                const newWorldOrigin = { ...midWorld.origin, [strideAxis]: coord };
-                const newPos = {
-                    x: newWorldOrigin.x + offset.x,
-                    y: newWorldOrigin.y + offset.y,
-                    z: newWorldOrigin.z + offset.z,
-                };
-
-                newRegions.set(`${midName}_${copy}`, cloneWithPosition(midEntry, newPos));
+                const newOrigin = { ...midWorld.origin, [strideAxis]: coord, [parallelAxis]: midWorld.origin[parallelAxis] + shift };
+                newRegions.set(`${midName}_${copy}`, cloneWithPosition(midEntry, {
+                    x: newOrigin.x + (midPos.x - midWorld.origin.x),
+                    y: newOrigin.y + (midPos.y - midWorld.origin.y),
+                    z: newOrigin.z + (midPos.z - midWorld.origin.z),
+                }));
                 coord += stride;
             }
         }
 
-        // 3. Place "last" right after all middles
+        // ── Last region ───────────────────────────────────────────────────────
         const lastEntry = regions.get(lastName);
-        const lastPos = readVec3(lastEntry, "Position");
-        const lastSize = readVec3(lastEntry, "Size");
+        const lastPos   = readVec3(lastEntry, "Position");
+        const lastSize  = readVec3(lastEntry, "Size");
         const lastWorld = localToWorld(lastPos, lastSize);
 
-        const lastOffset = {
-            x: lastPos.x - lastWorld.origin.x,
-            y: lastPos.y - lastWorld.origin.y,
-            z: lastPos.z - lastWorld.origin.z,
-        };
-        const newLastWorldOrigin = { ...lastWorld.origin, [strideAxis]: coord };
-        const newLastPos = {
-            x: newLastWorldOrigin.x + lastOffset.x,
-            y: newLastWorldOrigin.y + lastOffset.y,
-            z: newLastWorldOrigin.z + lastOffset.z,
-        };
+        const newLastOrigin = { ...lastWorld.origin, [strideAxis]: coord, [parallelAxis]: lastWorld.origin[parallelAxis] + shift };
+        newRegions.set(lastName, cloneWithPosition(lastEntry, {
+            x: newLastOrigin.x + (lastPos.x - lastWorld.origin.x),
+            y: newLastOrigin.y + (lastPos.y - lastWorld.origin.y),
+            z: newLastOrigin.z + (lastPos.z - lastWorld.origin.z),
+        }));
 
-        newRegions.set(lastName, cloneWithPosition(lastEntry, newLastPos));
-
-        // ── Patch EnclosingSize ───────────────────────────────────────────────
-        const middleTotal = stackSize * middleNames.length * stride;
-        const newAxisSize = Math.abs(firstSize[strideAxis]) + middleTotal + Math.abs(lastSize[strideAxis]);
-
-        const metadata = root.get("Metadata");
-        const enclosing = metadata.get("EnclosingSize");
-
-        const setVal = (compound, key, val) => {
-            const node = compound.get(key);
-            node.value !== undefined ? (node.value = val) : compound.set(key, val);
-        };
-        setVal(enclosing, strideAxis, newAxisSize);
+        cumulativeShift += gap;
     }
 
-    // ── Write back ────────────────────────────────────────────────────────────
+    // ── Patch EnclosingSize from actual bounding box ──────────────────────────
+    const PA = parallelAxis.toUpperCase();
+    const SA = strideAxis.toUpperCase();
+    let minP = Infinity, maxP = -Infinity;
+    let minS = Infinity, maxS = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
 
+    for (const region of newRegions.values()) {
+        const { bounds: b } = localToWorld(readVec3(region, "Position"), readVec3(region, "Size"));
+        if (b[`min${PA}`] < minP) minP = b[`min${PA}`];
+        if (b[`max${PA}`] > maxP) maxP = b[`max${PA}`];
+        if (b[`min${SA}`] < minS) minS = b[`min${SA}`];
+        if (b[`max${SA}`] > maxS) maxS = b[`max${SA}`];
+        if (b.minY < minY) minY = b.minY;
+        if (b.maxY > maxY) maxY = b.maxY;
+    }
+
+    const enclosing = root.get("Metadata").get("EnclosingSize");
+    function setVal(compound, key, val) {
+        const node = compound.get(key);
+        node.value !== undefined ? (node.value = val) : compound.set(key, val);
+    }
+    setVal(enclosing, parallelAxis, maxP - minP + 1);
+    setVal(enclosing, strideAxis,   maxS - minS + 1);
+    setVal(enclosing, 'y',          maxY - minY + 1);
+
+    // ── Write back ────────────────────────────────────────────────────────────
     const regionsCompound = new deepslate.NbtCompound();
-    for (const [name, region] of newRegions.entries()) {
+    for (const [name, region] of newRegions) {
         regionsCompound.set(name, region);
     }
     root.set("Regions", regionsCompound);

@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Deepslate Litematic Viewer</title>
+  <head>
+    <meta charset="UTF-8">
+    <title>Deepslate Litematic Viewer</title>
 
-<style>
+    <style>
 /* ================= BASIC LAYOUT ================= */
 html, body {
   margin: 0;
@@ -405,57 +405,61 @@ button:active {
 
 </style>
 
-<body>
+    <body>
 
-<!-- ================= CONTROLS PANEL ================= -->
-<div class="controls-panel" id="controls-panel">
-  <h1>⚙️ Controls</h1>
-  
-  <div class="file-input-section" id="file-drop-area">
-    <p>📂 Drag & Drop Litematic here or click to browse</p>
-    <input id="file-input" type="file" accept=".litematic">
-  </div>
+      <!-- ================= CONTROLS PANEL ================= -->
+      <div class="controls-panel" id="controls-panel">
+        <h1>⚙️ Controls</h1>
 
-  <div class="button-group">
-    <button id="clear-button">🗑️ Clear</button>
-    <button id="download-materials">📥 Download Materials CSV</button>
-    <button id="download-litematic">📦 Download Litematic</button>
-  </div>
+        <div class="file-input-section" id="file-drop-area">
+          <p>📂 Drag & Drop Litematic here or click to browse</p>
+          <input id="file-input" type="file" accept=".litematic">
+        </div>
 
-  <div id="stack-controls" style="display:none; margin-top:10px;">
-    <label>Stack Count:</label>
-    <input id="stack-count" type="number" min="1" value="1" style="width:60px;">
+        <div class="button-group">
+          <button id="clear-button">🗑️ Clear</button>
+          <button id="download-materials">📥 Download Materials CSV</button>
+          <button id="download-litematic">📦 Download Litematic</button>
+        </div>
 
-     <div id="enclosing-size-display" class="enclosing-size">
-    <!-- Will be updated by JS -->
-    </div>
-  </div>
+        <div id="stack-controls" style="display:none; margin-top:10px;">
+          <label>Stack Count:</label>
+          <input id="stack-count" type="number" min="1" value="1"
+            style="width:60px;">
 
-</div>
+          <label style="margin-left:12px;">Cluster Gap:</label>
+          <input id="cluster-gap" type="number" min="0" value="0"
+            style="width:60px;">
+          <span
+            style="font-size:12px; color: var(--color-text-secondary);">blocks</span>
 
-<!-- ADD THIS -->
-<script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+          <div id="enclosing-size-display" class="enclosing-size">
+            <!-- Will be updated by JS -->
+          </div>
+        </div>
+      </div>
 
-<!-- ================= CANVAS + SLIDER ================= -->
-<div class="main-content" id="main-content">
-  <div class="canvas-container">
-    <canvas id="structure-display" width="600" height="400"></canvas>
-  </div>
-  <div class="double-slider-container" id="slider-container">
-    <!-- Slider thumbs and range will be inserted here by JS -->
-  </div>
- 
-</div>
+      <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
 
+      <!-- ================= CANVAS + SLIDER ================= -->
+      <div class="main-content" id="main-content">
+        <div class="canvas-container">
+          <canvas id="structure-display" width="600" height="400"></canvas>
+        </div>
+        <div class="double-slider-container" id="slider-container">
+          <!-- Slider thumbs and range will be inserted here by JS -->
+        </div>
 
+      </div>
 
-<script src="https://unpkg.com/deepslate@0.25.1"></script>
-<script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
-<script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+      <script src="https://unpkg.com/deepslate@0.25.1"></script>
+      <script
+        src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
+      <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
 
-<script type="module" src="./src/main.js"></script>
+      <script type="module" src="./src/main.js"></script>
 
-<script>
+      <script>
 const canvas = document.getElementById('structure-display');
 
 function resizeCanvas() {
@@ -474,7 +478,7 @@ resizeCanvas();
 
 </script>
 
-<script>
+      <script>
 
   const fileDropArea = document.getElementById('file-drop-area');
 const fileInput = document.getElementById('file-input');
@@ -518,5 +522,5 @@ function handleFile(file) {
 }
 </script>
 
-</body>
-</html>
+    </body>
+  </html>
