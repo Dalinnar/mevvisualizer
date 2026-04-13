@@ -27,7 +27,11 @@ function createProgressDisplay() {
   return div;
 }
 
-
+function syncVersionInput(nbt) {
+  const root = nbt.root ?? nbt;
+  document.getElementById('version-override').value = root.get('Version').value;
+  document.getElementById('version-controls').style.display = 'block';
+}
 
 async function init() {
   const blockData = await loadBlockData();
@@ -66,6 +70,19 @@ async function init() {
 
   function downloadLitematic(nbtFile, filename = 'stacked.litematic') {
     try {
+      const versionInput = document.getElementById('version-override');
+      const versionOverride = versionInput?.value ? parseInt(versionInput.value) : null;
+
+      console.log(nbtFile.root.get("Version"))
+
+      if (versionOverride !== null && !isNaN(versionOverride)) {
+        const root = nbtFile.root ?? nbtFile;
+
+        
+
+        root.set('Version', new deepslate.NbtInt(versionOverride));
+      }
+
       nbtFile.compression = 'gzip';
       const data = nbtFile.write();
       const blob = new Blob([data], { type: 'application/octet-stream' });
@@ -202,6 +219,7 @@ async function init() {
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+    syncVersionInput(nbt);
     const validation = validateStackingStructure(nbt);
 
     if (validation.isValid) {
@@ -234,6 +252,8 @@ async function init() {
     document.getElementById('gap-controls').style.display = 'none';
     document.getElementById('stack-count').value = 1;
     document.getElementById('cluster-gap').value = 0;
+    document.getElementById('version-controls').style.display = 'none';
+    document.getElementById('version-override').value = '';
   });
 
   document.getElementById('download-materials').addEventListener('click', () => {
@@ -266,6 +286,7 @@ async function init() {
 
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+    syncVersionInput(nbt); // ← add this
     const validation = validateStackingStructure(nbt);
 
     if (validation.isValid) {
