@@ -4,7 +4,7 @@ import { loadBlockData, ResourceLoader } from './resources.js';
 import { StructureBuilder } from './structure.js';
 import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer } = deepslate;
-import { validateStackingStructure, stackMiddle } from './validate.js';
+import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack } from './validate.js';
 
 
 function createProgressDisplay() {
@@ -50,7 +50,8 @@ async function init() {
   const resources = resourceLoader.getResources();
 
   let currentStructure = null, currentRenderer = null, currentCamera = null,
-    currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null;
+    currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null,
+    currentStrideAxis = null, currentClusterCount = 0;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const getEnclosing = (root) => {
@@ -58,6 +59,102 @@ async function init() {
     const n = k => Math.abs(Number(enc.get(k).value ?? enc.get(k)));
     return { w: n("x"), h: n("y"), d: n("z") };
   };
+
+  // Renders "Size: n x n x n" with the axis that grows via stacking (strideAxis)
+  // as an editable <input>, and — when the structure has more than one cluster,
+  // so the "Cluster Gap" control actually does something — the parallel axis
+  // (the free axis gap scales) as an editable <input> too. The remaining axis
+  // (height, unaffected by either control) stays a plain, disabled number.
+  function updateEnclosingSizeDisplay(w, h, d, strideAxis, clusterCount) {
+    const container = document.getElementById('enclosing-size-display');
+    const dims = { x: w, y: h, z: d };
+    const order = ['x', 'y', 'z'];
+
+    const parallelAxis = strideAxis ? (strideAxis === 'x' ? 'z' : 'x') : null;
+    const gapEditable = parallelAxis && clusterCount > 1;
+
+    container.innerHTML = 'Size: ' + order.map(axis => {
+      const isStride = axis === strideAxis;
+      const isParallel = gapEditable && axis === parallelAxis;
+      const editable = isStride || isParallel;
+      const role = isStride ? 'stride' : (isParallel ? 'parallel' : '');
+      const cls = editable ? 'size-axis-input size-axis-editable' : 'size-axis-input';
+      return `<input type="number" min="1" step="1" class="${cls}" data-axis="${axis}" data-role="${role}" value="${dims[axis]}" ${editable ? '' : 'disabled'}>`;
+    }).join(' x ');
+
+    const bind = (axis, role) => {
+      const input = container.querySelector(`input[data-axis="${axis}"]`);
+      if (!input) return;
+      let committing = false;
+
+      const commit = async () => {
+        if (committing) return;
+        committing = true;
+        const target = Math.max(1, parseInt(input.value, 10) || 1);
+        if (role === 'stride') await applyTargetStrideSize(target, axis);
+        else await applyTargetParallelSize(target, axis);
+        committing = false;
+      };
+
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+      input.addEventListener('blur', commit);
+    };
+
+    if (strideAxis) bind(strideAxis, 'stride');
+    if (gapEditable) bind(parallelAxis, 'parallel');
+  }
+
+  // Given a desired total size along the growing axis, figures out the stack
+  // count needed to reach it (growth is linear per stack unit), applies it,
+  // and re-renders.
+  async function applyTargetStrideSize(targetSize, strideAxis) {
+    if (!originalBuffer) return;
+    const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);
+
+    let size1, size2;
+    try {
+      size1 = computeEnclosingSizeAtStack(originalBuffer, 1, gap)[strideAxis];
+      size2 = computeEnclosingSizeAtStack(originalBuffer, 2, gap)[strideAxis];
+    } catch (err) {
+      console.error('Failed to probe size for target stride:', err);
+      return;
+    }
+
+    const perStack = size2 - size1;
+    let neededStack = 1;
+    if (perStack > 0) {
+      neededStack = Math.max(1, Math.round(1 + (targetSize - size1) / perStack));
+    }
+
+    document.getElementById('stack-count').value = neededStack;
+    await rerender();
+  }
+
+  // Given a desired total size along the parallel (free) axis, figures out
+  // the cluster gap needed to reach it (growth is linear per gap unit),
+  // applies it, and re-renders.
+  async function applyTargetParallelSize(targetSize, parallelAxis) {
+    if (!originalBuffer) return;
+    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
+
+    let size1, size2;
+    try {
+      size1 = computeEnclosingSizeAtStack(originalBuffer, stackSize, 0)[parallelAxis];
+      size2 = computeEnclosingSizeAtStack(originalBuffer, stackSize, 1)[parallelAxis];
+    } catch (err) {
+      console.error('Failed to probe size for target parallel axis:', err);
+      return;
+    }
+
+    const perGap = size2 - size1;
+    let neededGap = 0;
+    if (perGap > 0) {
+      neededGap = Math.max(0, Math.round((targetSize - size1) / perGap));
+    }
+
+    document.getElementById('cluster-gap').value = neededGap;
+    await rerender();
+  }
 
   function rebuildWithYRange(minY, maxY) {
     if (!currentBuilder) return;
@@ -147,8 +244,16 @@ async function init() {
 
     let root = nbt.root || nbt;
     lastStackedNbt = null;
+    currentStrideAxis = null;
+    currentClusterCount = 0;
 
     if (stackSize) {
+      const validation = validateStackingStructure(nbt);
+      currentStrideAxis = validation.isValid && validation.stackAxis
+        ? validation.stackAxis.replace('-', '')
+        : null;
+      currentClusterCount = validation.isValid ? validation.details.clusterCount : 0;
+
       const stacked = stackMiddle(nbt, stackSize, gap);
       lastStackedNbt = stacked;
       root = stacked.root;
@@ -156,7 +261,7 @@ async function init() {
 
     const { w, h, d } = getEnclosing(root);
     if (stackSize) {
-      document.getElementById('enclosing-size-display').textContent = `Size: ${w} x ${h} x ${d}`;
+      updateEnclosingSizeDisplay(w, h, d, currentStrideAxis, currentClusterCount);
     }
 
     const builder = new StructureBuilder(w, h, d);
@@ -246,6 +351,9 @@ async function init() {
     gl?.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
     originalBuffer = lastStackedNbt = null;
+    currentStrideAxis = null;
+    currentClusterCount = 0;
+    document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
     document.getElementById('stack-controls').style.display = 'none';

@@ -219,6 +219,20 @@ export function validateStackingStructure(nbt) {
     return result;
 }
 
+// ── Size probing (used to convert a target dimension back into a stack count) ──
+
+// Runs stackMiddle on a disposable NBT parse just to read the resulting
+// EnclosingSize, without touching the caller's NBT object or triggering a
+// full render. Cheap enough to call a couple of times per user edit.
+export function computeEnclosingSizeAtStack(originalBuffer, stackSize, gap = 0) {
+    const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+    const stacked = stackMiddle(nbt, stackSize, gap);
+    const root = stacked.root ?? stacked;
+    const enc = root.get("Metadata").get("EnclosingSize");
+    const n = k => Math.abs(Number(enc.get(k).value ?? enc.get(k)));
+    return { x: n('x'), y: n('y'), z: n('z') };
+}
+
 // ── Stacking ──────────────────────────────────────────────────────────────────
 
 export function stackMiddle(nbt, stackSize, gap = 0) {
