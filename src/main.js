@@ -393,7 +393,11 @@ async function init() {
         manualConfigs.splice(parseInt(btn.dataset.index, 10), 1);
         renderManualConfigList();
         updateManualStatus();
-        if (manualConfigs.length && originalBuffer) await applyManualStack();
+        if (manualConfigs.length && originalBuffer) {
+          await applyManualStack();
+        } else {
+          clearConfigFromUrl();
+        }
       });
     });
   }
@@ -446,6 +450,7 @@ async function init() {
       .join(' | ');
 
     renderManualConfigList();
+    syncConfigToUrl();
 
     lastStackedNbt = result.nbt;
     currentStrideAxis = null;
@@ -459,10 +464,10 @@ async function init() {
     await buildAndRender(builder, root.get("Regions"), w, h, d);
   }
 
-  // Builds a shareable `?ext_link=&config=` URL for the current list of
-  // saved manual stacking pairs and copies it to the clipboard. Only
-  // available when the litematic itself was loaded via ?ext_link=, since
-  // the link recipient needs a URL to fetch the source file from.
+  // Copies the current shareable URL to the clipboard. The address bar is
+  // already kept in sync with the applied configuration via syncConfigToUrl,
+  // so this just needs to make sure that's up to date and an ext_link is
+  // actually present (otherwise a recipient would have nothing to fetch).
   function copyManualShareLink() {
     if (!currentExtLink) {
       alert('Shareable links are only available for litematics loaded via a ?ext_link= URL.');
@@ -473,19 +478,63 @@ async function init() {
       return;
     }
 
+    syncConfigToUrl();
+
+    navigator.clipboard?.writeText(window.location.href).then(() => {
+      alert('Shareable link copied to clipboard!');
+    }).catch(() => {
+      prompt('Copy this link:', window.location.href);
+    });
+  }
+
+  // If the URL has a `config` parameter, restores it onto whatever file was
+  // just loaded (regardless of whether it came from ?ext_link= or a manual
+  // upload) and applies it immediately. Returns true if a config was found
+  // and applied, false otherwise — callers should fall back to automatic
+  // detection when this returns false.
+  async function restoreManualConfigFromUrl() {
+    const configParam = new URLSearchParams(window.location.search).get('config');
+    if (!configParam) return false;
+
+    const decoded = decodeManualConfig(configParam);
+    if (!decoded) {
+      console.warn('Failed to parse manual stacking config from URL; falling back to automatic detection.');
+      return false;
+    }
+
+    document.getElementById('mode-manual').checked = true;
+    setManualMode(true);
+    manualConfigs = decoded.pairs;
+    document.getElementById('stack-count').value = decoded.cycles;
+    document.getElementById('stack-controls').style.display = 'block';
+    renderManualConfigList();
+    updateManualStatus();
+    await applyManualStack(decoded.pairs);
+    return true;
+  }
+
+  // Keeps the address bar's `config` parameter (and `ext_link`, if known) in
+  // sync with the currently-applied manual stacking configuration, without
+  // adding browser history entries. Called automatically every time a
+  // manual stack is (re-)applied.
+  function syncConfigToUrl() {
+    if (!manualMode || !manualConfigs.length) return;
+
     const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
     const config = encodeManualConfig(manualConfigs, cycles);
 
     const url = new URL(window.location.href);
-    url.search = '';
-    url.searchParams.set('ext_link', currentExtLink);
     url.searchParams.set('config', config);
+    if (currentExtLink) url.searchParams.set('ext_link', currentExtLink);
+    window.history.replaceState({}, '', url.toString());
+  }
 
-    navigator.clipboard?.writeText(url.toString()).then(() => {
-      alert('Shareable link copied to clipboard!');
-    }).catch(() => {
-      prompt('Copy this link:', url.toString());
-    });
+  // Removes the `config` parameter from the address bar (e.g. once all
+  // saved pairs are cleared).
+  function clearConfigFromUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('config');
+    window.history.replaceState({}, '', url.toString());
   }
 
   function downloadLitematic(nbtFile, filename = 'stacked.litematic') {
@@ -677,25 +726,10 @@ async function init() {
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     syncVersionInput(nbt);
 
-    // A `config` parameter means this link was shared from Manual Stacking:
-    // restore the mode, the Step/Cap selection, and the stack count, then
-    // render immediately.
-    const configParam = params.get('config');
-    if (configParam) {
-      const decoded = decodeManualConfig(configParam);
-      if (decoded) {
-        document.getElementById('mode-manual').checked = true;
-        setManualMode(true);
-        manualConfigs = decoded.pairs;
-        document.getElementById('stack-count').value = decoded.cycles;
-        document.getElementById('stack-controls').style.display = 'block';
-        renderManualConfigList();
-        updateManualStatus();
-        await applyManualStack(decoded.pairs);
-        return;
-      }
-      console.warn('Failed to parse manual stacking config from URL; falling back to automatic detection.');
-    }
+    // A `config` parameter means a manual stacking configuration should be
+    // restored onto this file — regardless of whether it came via ?ext_link=
+    // or a manual upload (see the file-input handler below for the other case).
+    if (await restoreManualConfigFromUrl()) return;
 
     const validation = validateStackingStructure(nbt);
     lastAutoValidation = validation;
@@ -765,6 +799,7 @@ async function init() {
     manualCurrentCap = null;
     renderManualConfigList();
     updateManualStatus();
+    clearConfigFromUrl();
   });
   document.getElementById('manual-apply-button').addEventListener('click', () => applyManualStack());
   document.getElementById('manual-copy-link').addEventListener('click', () => copyManualShareLink());
@@ -787,6 +822,7 @@ async function init() {
     document.getElementById('mode-automatic').checked = true;
     setManualMode(false);
     renderManualConfigList();
+    clearConfigFromUrl();
     document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
@@ -832,6 +868,12 @@ async function init() {
     syncVersionInput(nbt); // ← add this
     currentExtLink = null; // manually-uploaded files have no shareable source URL
     updateManualStatus();
+
+    // If the URL already carries a manual stacking `config` (e.g. the page
+    // was opened via a shared link but the litematic itself had to be
+    // uploaded manually), restore and apply it onto this file too.
+    if (await restoreManualConfigFromUrl()) return;
+
     const validation = validateStackingStructure(nbt);
     lastAutoValidation = validation;
 
