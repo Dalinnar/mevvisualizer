@@ -6,7 +6,7 @@ import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
 import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack } from './validate.js';
-import { manualStack, encodeManualConfig, decodeManualConfig } from './manualStack.js';
+import { manualStackMulti, encodeManualConfig, decodeManualConfig } from './manualStack.js';
 
 // Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
 const REGION_BOX_COLORS = [
@@ -188,8 +188,8 @@ async function init() {
     currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null,
     currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [],
     selectedRegionName = null, selectionMesh = null,
-    manualMode = false, manualStepName = null, manualCapName = null,
-    currentExtLink = null, lastAutoValidation = null;
+    manualMode = false, manualCurrentStep = null, manualCurrentCap = null,
+    manualConfigs = [], currentExtLink = null, lastAutoValidation = null;
 
   // Selects (or, if regionName is null/unmatched, deselects) a region: logs
   // it and rebuilds the small translucent highlight mesh for it. Not run
@@ -350,28 +350,69 @@ async function init() {
     updateManualStatus();
   }
 
-  // Refreshes the Step/Cap labels and enables/disables the Apply and
-  // Copy-Link buttons based on current selections.
-  function updateManualStatus() {
-    document.getElementById('manual-step-label').textContent = manualStepName || '(none selected)';
-    document.getElementById('manual-cap-label').textContent = manualCapName || '(none selected)';
-    document.getElementById('manual-apply-button').disabled =
-      !(manualStepName && manualCapName && originalBuffer);
-    document.getElementById('manual-copy-link').disabled =
-      !(manualStepName && manualCapName && currentExtLink);
+  // Renders the list of saved Step/Cap pairs, each with its own editable
+  // stack count and a remove button. Editing a count re-applies the full
+  // stack immediately so the change is visible right away.
+  function renderManualConfigList() {
+    const container = document.getElementById('manual-config-list');
+    container.innerHTML = '';
+
+    manualConfigs.forEach((cfg, i) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:4px;';
+      row.innerHTML = `
+        <span style="flex:1;">${i + 1}. Step: <b>${cfg.stepName}</b> → Cap: <b>${cfg.capName}</b></span>
+        <label style="display:flex; align-items:center; gap:4px; white-space:nowrap;">
+          ×<input type="number" min="1" value="${cfg.stackCount}" class="manual-config-count" data-index="${i}" style="width:50px;">
+        </label>
+        <button data-index="${i}" class="manual-remove-config" title="Remove this pair">✕</button>
+      `;
+      container.appendChild(row);
+    });
+
+    container.querySelectorAll('.manual-config-count').forEach(input => {
+      const commit = async () => {
+        const idx = parseInt(input.dataset.index, 10);
+        const val = Math.max(1, parseInt(input.value, 10) || 1);
+        input.value = val;
+        manualConfigs[idx].stackCount = val;
+        if (originalBuffer) await applyManualStack();
+      };
+      input.addEventListener('change', commit);
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+    });
+
+    container.querySelectorAll('.manual-remove-config').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        manualConfigs.splice(parseInt(btn.dataset.index, 10), 1);
+        renderManualConfigList();
+        updateManualStatus();
+        if (manualConfigs.length && originalBuffer) await applyManualStack();
+      });
+    });
   }
 
-  // Runs manualStack() with either the given step/cap/stackSize (used when
-  // restoring from a shared URL) or the currently-selected UI state, then
+  // Refreshes the Step/Cap labels and enables/disables the Save/Apply/Copy
+  // buttons based on current selections and saved pairs.
+  function updateManualStatus() {
+    document.getElementById('manual-step-label').textContent = manualCurrentStep || '(none selected)';
+    document.getElementById('manual-cap-label').textContent = manualCurrentCap || '(none selected)';
+    document.getElementById('manual-save-config').disabled = !(manualCurrentStep && manualCurrentCap);
+    document.getElementById('manual-apply-button').disabled = !(manualConfigs.length && originalBuffer);
+    document.getElementById('manual-copy-link').disabled = !(manualConfigs.length && currentExtLink);
+  }
+
+  // Runs manualStackMulti() with either the given list of configs (used
+  // when restoring from a shared URL) or the currently-saved list, then
   // renders the result the same way automatic stacking does.
-  async function applyManualStack(stepNameOverride, capNameOverride, stackSizeOverride) {
+  async function applyManualStack(configsOverride) {
     if (!originalBuffer) { alert('Load a litematic first.'); return; }
 
-    const stepName = stepNameOverride ?? manualStepName;
-    const capName = capNameOverride ?? manualCapName;
-    if (!stepName || !capName) { alert('Select both a Step region and a Cap region first.'); return; }
-
-    const stackSize = Math.max(1, parseInt(stackSizeOverride ?? document.getElementById('stack-count').value, 10) || 1);
+    const configs = configsOverride ?? manualConfigs;
+    if (!configs || configs.length === 0) {
+      alert('Save at least one Step/Cap pair first.');
+      return;
+    }
 
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Applying manual stack...';
@@ -379,7 +420,7 @@ async function init() {
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     let result;
     try {
-      result = manualStack(nbt, stepName, capName, stackSize);
+      result = manualStackMulti(nbt, configs);
     } catch (err) {
       console.error(err);
       progressDisplay.style.display = 'none';
@@ -388,8 +429,9 @@ async function init() {
       return;
     }
 
-    document.getElementById('manual-status').textContent =
-      `Stacking along ${result.direction > 0 ? '+' : '-'}${result.axis} (stride ${result.stride}).`;
+    document.getElementById('manual-status').textContent = result.results
+      .map(r => `${r.stepName}→${r.capName}: ${r.direction > 0 ? '+' : '-'}${r.axis} ×${r.count}`)
+      .join(' | ');
 
     lastStackedNbt = result.nbt;
     currentStrideAxis = null;
@@ -403,22 +445,21 @@ async function init() {
     await buildAndRender(builder, root.get("Regions"), w, h, d);
   }
 
-  // Builds a shareable `?ext_link=&config=` URL for the current manual
-  // stacking configuration and copies it to the clipboard. Only available
-  // when the litematic itself was loaded via ?ext_link=, since the link
-  // recipient needs a URL to fetch the source file from.
+  // Builds a shareable `?ext_link=&config=` URL for the current list of
+  // saved manual stacking pairs and copies it to the clipboard. Only
+  // available when the litematic itself was loaded via ?ext_link=, since
+  // the link recipient needs a URL to fetch the source file from.
   function copyManualShareLink() {
     if (!currentExtLink) {
       alert('Shareable links are only available for litematics loaded via a ?ext_link= URL.');
       return;
     }
-    if (!manualStepName || !manualCapName) {
-      alert('Select both a Step region and a Cap region first.');
+    if (!manualConfigs.length) {
+      alert('Save at least one Step/Cap pair first.');
       return;
     }
 
-    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-    const config = encodeManualConfig({ stepName: manualStepName, capName: manualCapName, stackCount: stackSize });
+    const config = encodeManualConfig(manualConfigs);
 
     const url = new URL(window.location.href);
     url.search = '';
@@ -626,16 +667,15 @@ async function init() {
     // render immediately.
     const configParam = params.get('config');
     if (configParam) {
-      const config = decodeManualConfig(configParam);
-      if (config) {
+      const configs = decodeManualConfig(configParam);
+      if (configs && configs.length) {
         document.getElementById('mode-manual').checked = true;
         setManualMode(true);
-        manualStepName = config.stepName;
-        manualCapName = config.capName;
-        document.getElementById('stack-count').value = config.stackCount;
+        manualConfigs = configs;
+        renderManualConfigList();
         document.getElementById('stack-controls').style.display = 'block';
         updateManualStatus();
-        await applyManualStack(config.stepName, config.capName, config.stackCount);
+        await applyManualStack(configs);
         return;
       }
       console.warn('Failed to parse manual stacking config from URL; falling back to automatic detection.');
@@ -679,12 +719,31 @@ async function init() {
 
   document.getElementById('manual-set-step').addEventListener('click', () => {
     if (!selectedRegionName) { alert('Click a region in the 3D view first.'); return; }
-    manualStepName = selectedRegionName;
+    manualCurrentStep = selectedRegionName;
     updateManualStatus();
   });
   document.getElementById('manual-set-cap').addEventListener('click', () => {
     if (!selectedRegionName) { alert('Click a region in the 3D view first.'); return; }
-    manualCapName = selectedRegionName;
+    manualCurrentCap = selectedRegionName;
+    updateManualStatus();
+  });
+  document.getElementById('manual-save-config').addEventListener('click', () => {
+    if (!manualCurrentStep || !manualCurrentCap) {
+      alert('Select both a Step region and a Cap region first.');
+      return;
+    }
+    const stackCount = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+    manualConfigs.push({ stepName: manualCurrentStep, capName: manualCurrentCap, stackCount });
+    manualCurrentStep = null;
+    manualCurrentCap = null;
+    renderManualConfigList();
+    updateManualStatus();
+  });
+  document.getElementById('manual-clear-configs').addEventListener('click', () => {
+    manualConfigs = [];
+    manualCurrentStep = null;
+    manualCurrentCap = null;
+    renderManualConfigList();
     updateManualStatus();
   });
   document.getElementById('manual-apply-button').addEventListener('click', () => applyManualStack());
@@ -700,12 +759,14 @@ async function init() {
     currentRegionMeshes = [];
     selectedRegionName = null;
     selectionMesh = null;
-    manualStepName = null;
-    manualCapName = null;
+    manualCurrentStep = null;
+    manualCurrentCap = null;
+    manualConfigs = [];
     currentExtLink = null;
     lastAutoValidation = null;
     document.getElementById('mode-automatic').checked = true;
     setManualMode(false);
+    renderManualConfigList();
     document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';

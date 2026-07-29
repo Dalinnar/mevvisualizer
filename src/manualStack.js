@@ -85,65 +85,91 @@ export function detectManualStackAxis(stepWorld, capWorld) {
 
 // ── Stacking ──────────────────────────────────────────────────────────────────
 
-// Builds a manually-stacked structure. Mutates and returns `nbt` (matching
-// the convention used by stackMiddle in validate.js).
+// Builds a manually-stacked structure from a list of independent Step/Cap
+// configurations. Mutates and returns `nbt` (matching the convention used
+// by stackMiddle in validate.js).
 //
-// Returns { nbt, axis, direction, stride } on success. Throws if the
-// regions can't be found or aren't adjacent along a single axis.
-export function manualStack(nbt, stepName, capName, stackCount) {
+// `configs` is an array of { stepName, capName, stackCount }. Each pair is
+// resolved independently against the *original* region layout — regions not
+// referenced by any config are passed through untouched, and regions
+// referenced by one config are unaffected by any other config.
+//
+// Returns { nbt, results } where `results` is a per-config array of
+// { stepName, capName, axis, direction, stride, count } describing what was
+// detected/applied, useful for status messages. Throws if any pair can't be
+// resolved or isn't adjacent along a single axis.
+export function manualStackMulti(nbt, configs) {
   const root = nbt.root || nbt;
   const regions = root.get("Regions");
 
-  const stepEntry = regions.get(stepName);
-  const capEntry = regions.get(capName);
-
-  if (!stepEntry) throw new Error(`Step region "${stepName}" not found`);
-  if (!capEntry) throw new Error(`Cap region "${capName}" not found`);
-  if (stepName === capName) throw new Error('Step and Cap must be different regions');
-
-  const stepPos = readVec3(stepEntry, "Position");
-  const stepSize = readVec3(stepEntry, "Size");
-  const capPos = readVec3(capEntry, "Position");
-  const capSize = readVec3(capEntry, "Size");
-
-  const stepWorld = localToWorld(stepPos, stepSize);
-  const capWorld = localToWorld(capPos, capSize);
-
-  const detected = detectManualStackAxis(stepWorld, capWorld);
-  if (!detected) {
-    throw new Error(
-      'Could not determine a stacking direction: the selected Step and Cap ' +
-      'regions must be directly adjacent (touching, with full overlap on the ' +
-      'other two axes) along exactly one axis.'
-    );
+  if (!configs || configs.length === 0) {
+    throw new Error('No manual stacking configurations to apply.');
   }
-  const { axis, direction } = detected;
-  const stride = stepWorld.size[axis];
-  const count = Math.max(1, stackCount);
+
+  const usedNames = new Set();
+  for (const { stepName, capName } of configs) {
+    if (stepName === capName) {
+      throw new Error(`Step and Cap must be different regions (got "${stepName}" twice)`);
+    }
+    usedNames.add(stepName);
+    usedNames.add(capName);
+  }
 
   const newRegions = new Map();
 
-  // Every region other than Step/Cap is passed through completely unchanged.
+  // Every region not referenced by any config is passed through completely
+  // unchanged.
   for (const name of regions.keys()) {
-    if (name === stepName || name === capName) continue;
+    if (usedNames.has(name)) continue;
     newRegions.set(name, deepCloneNbtCompound(regions.get(name)));
   }
 
-  // Step copies: copy 0 keeps the original position/name; each following
-  // copy is shifted further along `axis`, toward where Cap currently sits.
-  for (let i = 0; i < count; i++) {
-    const shift = i * stride * direction;
-    const newPos = { ...stepPos, [axis]: stepPos[axis] + shift };
-    const name = i === 0 ? stepName : `${stepName}_${i}`;
-    newRegions.set(name, cloneWithPosition(stepEntry, newPos));
-  }
+  const results = [];
 
-  // Cap: never duplicated — just translated so it remains attached past the
-  // last generated Step copy. With count === 1 this is a zero shift, i.e.
-  // Cap stays exactly where it started.
-  const capShift = (count - 1) * stride * direction;
-  const newCapPos = { ...capPos, [axis]: capPos[axis] + capShift };
-  newRegions.set(capName, cloneWithPosition(capEntry, newCapPos));
+  for (const { stepName, capName, stackCount } of configs) {
+    const stepEntry = regions.get(stepName);
+    const capEntry = regions.get(capName);
+
+    if (!stepEntry) throw new Error(`Step region "${stepName}" not found`);
+    if (!capEntry) throw new Error(`Cap region "${capName}" not found`);
+
+    const stepPos = readVec3(stepEntry, "Position");
+    const stepSize = readVec3(stepEntry, "Size");
+    const capPos = readVec3(capEntry, "Position");
+    const capSize = readVec3(capEntry, "Size");
+
+    const stepWorld = localToWorld(stepPos, stepSize);
+    const capWorld = localToWorld(capPos, capSize);
+
+    const detected = detectManualStackAxis(stepWorld, capWorld);
+    if (!detected) {
+      throw new Error(
+        `Could not determine a stacking direction for "${stepName}" / "${capName}": ` +
+        'they must be directly adjacent (touching, with full overlap on the other ' +
+        'two axes) along exactly one axis.'
+      );
+    }
+    const { axis, direction } = detected;
+    const stride = stepWorld.size[axis];
+    const count = Math.max(1, stackCount);
+
+    // Step copies: copy 0 keeps the original position/name; each following
+    // copy is shifted further along `axis`, toward where Cap currently sits.
+    for (let i = 0; i < count; i++) {
+      const shift = i * stride * direction;
+      const newPos = { ...stepPos, [axis]: stepPos[axis] + shift };
+      const name = i === 0 ? stepName : `${stepName}_${i}`;
+      newRegions.set(name, cloneWithPosition(stepEntry, newPos));
+    }
+
+    // Cap: never duplicated — just translated so it remains attached past
+    // the last generated Step copy for *this* pair.
+    const capShift = (count - 1) * stride * direction;
+    const newCapPos = { ...capPos, [axis]: capPos[axis] + capShift };
+    newRegions.set(capName, cloneWithPosition(capEntry, newCapPos));
+
+    results.push({ stepName, capName, axis, direction, stride, count });
+  }
 
   // ── Patch EnclosingSize from the actual bounding box of every region ──────
   let minX = Infinity, maxX = -Infinity;
@@ -169,18 +195,21 @@ export function manualStack(nbt, stepName, capName, stackCount) {
   }
   root.set("Regions", regionsCompound);
 
-  return { nbt, axis, direction, stride };
+  return { nbt, results };
 }
 
 // ── Shareable URL configuration ───────────────────────────────────────────────
 //
-// Encodes { stepName, capName, stackCount } into a compact, URL-safe base64
-// string suitable for use as a `config` query parameter, alongside an
-// `ext_link` parameter pointing at the source litematic. See main.js's
-// loadFromExtLink for the corresponding restore logic.
+// Encodes an array of { stepName, capName, stackCount } pairs into a
+// compact, URL-safe base64 string suitable for use as a `config` query
+// parameter, alongside an `ext_link` parameter pointing at the source
+// litematic. See main.js's loadFromExtLink for the corresponding restore
+// logic.
 
-export function encodeManualConfig({ stepName, capName, stackCount }) {
-  const json = JSON.stringify({ step: stepName, cap: capName, count: stackCount });
+export function encodeManualConfig(configs) {
+  const json = JSON.stringify(
+    configs.map(c => ({ step: c.stepName, cap: c.capName, count: c.stackCount }))
+  );
   // Percent-encode then repack as Latin1 so btoa (which only handles Latin1)
   // can safely base64-encode arbitrary UTF-8 region names.
   const latin1 = encodeURIComponent(json).replace(/%([0-9A-F]{2})/g,
@@ -195,12 +224,17 @@ export function decodeManualConfig(str) {
       Array.from(latin1).map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
     );
     const parsed = JSON.parse(json);
-    if (!parsed || typeof parsed.step !== 'string' || typeof parsed.cap !== 'string') return null;
-    return {
-      stepName: parsed.step,
-      capName: parsed.cap,
-      stackCount: Math.max(1, parseInt(parsed.count, 10) || 1),
-    };
+    if (!Array.isArray(parsed)) return null;
+
+    const configs = parsed
+      .filter(c => c && typeof c.step === 'string' && typeof c.cap === 'string')
+      .map(c => ({
+        stepName: c.step,
+        capName: c.cap,
+        stackCount: Math.max(1, parseInt(c.count, 10) || 1),
+      }));
+
+    return configs.length ? configs : null;
   } catch (err) {
     console.error('Failed to decode manual stacking config:', err);
     return null;
