@@ -1,10 +1,11 @@
 const { mat4, vec3 } = glMatrix;
 
 export class InteractiveCanvas {
-  constructor(canvas, onRender, center = null, viewDist = 4) {
+  constructor(canvas, onRender, center = null, viewDist = 4, onSelect = null) {
     this.xRotation = 0.8;
     this.yRotation = 0.5;
     this.onRender = onRender;
+    this.onSelect = onSelect;
     this.center = center || [0, 0, 0];
     this.viewDist = viewDist;
     this.canvas = canvas;
@@ -12,23 +13,38 @@ export class InteractiveCanvas {
     this.movementSpeed = 0.3;
     this.isAnimating = false;
     this.animationFrameId = null;
+    this.lastViewMatrix = null;
     
     let dragPos = null;
+    let dragDistance = 0;
 
     this._onMouseDown = e => {
-      if (e.button === 0) dragPos = [e.clientX, e.clientY];
+      if (e.button === 0) {
+        dragPos = [e.clientX, e.clientY];
+        dragDistance = 0;
+      }
     };
     
     this._onMouseMove = e => {
       if (dragPos) {
-        this.yRotation += (e.clientX - dragPos[0]) / 100;
-        this.xRotation += (e.clientY - dragPos[1]) / 100;
+        const dx = e.clientX - dragPos[0];
+        const dy = e.clientY - dragPos[1];
+        dragDistance += Math.abs(dx) + Math.abs(dy);
+        this.yRotation += dx / 100;
+        this.xRotation += dy / 100;
         dragPos = [e.clientX, e.clientY];
         this.redraw();
       }
     };
     
-    this._onMouseUp = () => dragPos = null;
+    this._onMouseUp = e => {
+      // A mousedown+mouseup with negligible movement in between is treated
+      // as a click (for region selection) rather than a drag (for rotation).
+      if (dragPos && dragDistance < 4 && this.onSelect) {
+        this.onSelect(e.clientX, e.clientY, this.lastViewMatrix);
+      }
+      dragPos = null;
+    };
     
     this._onWheel = e => {
       e.preventDefault();
@@ -134,6 +150,7 @@ export class InteractiveCanvas {
     mat4.rotate(view, view, this.yRotation, [0, 1, 0]);
     mat4.translate(view, view, [-this.center[0], -this.center[1], -this.center[2]]);
 
+    this.lastViewMatrix = view;
     this.onRender(view);
   }
 }

@@ -3,7 +3,8 @@ import { create3DBlocks } from './region.js';
 import { loadBlockData, ResourceLoader } from './resources.js';
 import { StructureBuilder } from './structure.js';
 import { DoubleRangeSlider } from './slider.js';
-const { StructureRenderer, Mesh } = deepslate;
+const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
+const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
 import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack } from './validate.js';
 
 // Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
@@ -11,6 +12,32 @@ const REGION_BOX_COLORS = [
   [1, 0.25, 0.25], [0.25, 1, 0.35], [0.3, 0.55, 1], [1, 0.85, 0.2],
   [1, 0.3, 1], [0.25, 1, 1], [1, 0.6, 0.15], [0.65, 0.35, 1],
 ];
+
+// Simple unlit, alpha-blended shader used to paint the translucent gray
+// highlight over a selected region's faces. (Blending is already enabled
+// globally by deepslate's Renderer.initialize().)
+const vsSelect = `
+  attribute vec4 vertPos;
+  attribute vec3 vertColor;
+
+  uniform mat4 mView;
+  uniform mat4 mProj;
+
+  varying highp vec3 vColor;
+
+  void main(void) {
+    gl_Position = mProj * mView * vertPos;
+    vColor = vertColor;
+  }
+`;
+const fsSelect = `
+  precision highp float;
+  varying highp vec3 vColor;
+
+  void main(void) {
+    gl_FragColor = vec4(vColor, 0.35);
+  }
+`;
 
 // Builds one line-cube mesh per region (in the structure's local coordinate
 // space) so region boundaries can be drawn through the same shader pipeline
@@ -24,6 +51,90 @@ function buildRegionMeshes(gl, builder) {
       .rebuild(gl, { pos: true, color: true });
     return { name, color, mesh };
   });
+}
+
+// Builds a filled (quads) box mesh spanning [min, max], used to paint the
+// translucent selection highlight over a region's faces.
+function buildBoxFillMesh(gl, min, max, color) {
+  const [x1, y1, z1] = min;
+  const [x2, y2, z2] = max;
+  const P = (x, y, z) => new Vector(x, y, z);
+  const quads = [
+    Quad.fromPoints(P(x1, y1, z1), P(x2, y1, z1), P(x2, y2, z1), P(x1, y2, z1)), // -Z face
+    Quad.fromPoints(P(x1, y1, z2), P(x1, y2, z2), P(x2, y2, z2), P(x2, y1, z2)), // +Z face
+    Quad.fromPoints(P(x1, y1, z1), P(x1, y2, z1), P(x1, y2, z2), P(x1, y1, z2)), // -X face
+    Quad.fromPoints(P(x2, y1, z1), P(x2, y1, z2), P(x2, y2, z2), P(x2, y2, z1)), // +X face
+    Quad.fromPoints(P(x1, y1, z1), P(x2, y1, z1), P(x2, y1, z2), P(x1, y1, z2)), // -Y face
+    Quad.fromPoints(P(x1, y2, z1), P(x1, y2, z2), P(x2, y2, z2), P(x2, y2, z1)), // +Y face
+  ].map(q => q.setColor(color));
+  return new Mesh(quads, []).rebuild(gl, { pos: true, color: true });
+}
+
+// Unprojects a click position (in CSS pixels) into a ray, in the same local
+// coordinate space the structure/region boxes are drawn in.
+function screenPointToRay(canvas, clientX, clientY, viewMatrix, projMatrix) {
+  const rect = canvas.getBoundingClientRect();
+  const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+  const ndcY = 1 - ((clientY - rect.top) / rect.height) * 2;
+
+  const viewProj = mat4Pick.create();
+  mat4Pick.multiply(viewProj, projMatrix, viewMatrix);
+  const invViewProj = mat4Pick.create();
+  mat4Pick.invert(invViewProj, viewProj);
+
+  const unproject = ndcZ => {
+    const v = vec4Pick.fromValues(ndcX, ndcY, ndcZ, 1);
+    vec4Pick.transformMat4(v, v, invViewProj);
+    if (v[3] !== 0) {
+      v[0] /= v[3]; v[1] /= v[3]; v[2] /= v[3];
+    }
+    return [v[0], v[1], v[2]];
+  };
+
+  const near = unproject(-1);
+  const far = unproject(1);
+  const dir = [far[0] - near[0], far[1] - near[1], far[2] - near[2]];
+  const len = Math.hypot(...dir) || 1;
+  return { origin: near, dir: dir.map(d => d / len) };
+}
+
+// Ray vs axis-aligned bounding box (slab method). Returns the entry t, or
+// null if the ray misses the box or the box is entirely behind the origin.
+function rayIntersectsAABB(origin, dir, min, max) {
+  let tmin = -Infinity, tmax = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const o = origin[i], d = dir[i];
+    if (Math.abs(d) < 1e-9) {
+      if (o < min[i] || o > max[i]) return null;
+      continue;
+    }
+    let t1 = (min[i] - o) / d;
+    let t2 = (max[i] - o) / d;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+  return tmax < 0 ? null : Math.max(tmin, 0);
+}
+
+// Finds the name of the region whose box is closest along the ray cast from
+// a click position, or null if the click didn't hit any region.
+function pickRegionAt(canvas, clientX, clientY, viewMatrix, projMatrix, boundsByRegion) {
+  if (!viewMatrix) return null;
+  const { origin, dir } = screenPointToRay(canvas, clientX, clientY, viewMatrix, projMatrix);
+
+  let closestName = null;
+  let closestT = Infinity;
+  for (const [name, { min, max }] of Object.entries(boundsByRegion)) {
+    const boxMax = [max[0] + 1, max[1] + 1, max[2] + 1];
+    const t = rayIntersectsAABB(origin, dir, min, boxMax);
+    if (t !== null && t < closestT) {
+      closestT = t;
+      closestName = name;
+    }
+  }
+  return closestName;
 }
 
 
@@ -62,6 +173,9 @@ async function init() {
   const gl = canvas.getContext('webgl');
   const progressDisplay = document.getElementById('progress-display') || createProgressDisplay();
 
+  // Shader used only for the translucent region-selection highlight.
+  const selectionShaderProgram = new ShaderProgram(gl, vsSelect, fsSelect).getProgram();
+
   await resourceLoader.load(blockData, ({ stage, percent }) => {
     progressDisplay.textContent = `${stage} ${percent}%`;
   });
@@ -71,7 +185,28 @@ async function init() {
 
   let currentStructure = null, currentRenderer = null, currentCamera = null,
     currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null,
-    currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [];
+    currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [],
+    selectedRegionName = null, selectionMesh = null;
+
+  // Selects (or, if regionName is null/unmatched, deselects) a region: logs
+  // it and rebuilds the small translucent highlight mesh for it. Not run
+  // per-frame — only when the selection actually changes via a click.
+  function selectRegion(regionName) {
+    selectedRegionName = regionName;
+
+    if (!regionName || !currentBuilder) {
+      selectionMesh = null;
+      currentCamera?.redraw();
+      return;
+    }
+
+    console.log('Selected region:', regionName);
+
+    const { min, max } = currentBuilder.getRegionBoundsLocal()[regionName];
+    const boxMax = [max[0] + 1, max[1] + 1, max[2] + 1];
+    selectionMesh = buildBoxFillMesh(gl, min, boxMax, [0.55, 0.55, 0.55]);
+    currentCamera?.redraw();
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const getEnclosing = (root) => {
@@ -238,6 +373,8 @@ async function init() {
     // Built once here (not inside the render callback), so region boxes are
     // reused across every frame instead of being rebuilt each render.
     currentRegionMeshes = buildRegionMeshes(gl, builder);
+    selectedRegionName = null;
+    selectionMesh = null;
 
     currentCamera = new InteractiveCanvas(canvas, view => {
       renderer.drawStructure(view);
@@ -251,7 +388,20 @@ async function init() {
         renderer.prepareDraw(view);
         currentRegionMeshes.forEach(({ mesh }) => renderer.drawMesh(mesh, { pos: true, color: true }));
       }
-    }, center);
+      if (selectionMesh) {
+        // Translucent gray fill over the selected region's faces. Cull face
+        // is disabled for this draw so both sides of each box face render.
+        renderer.setShader(selectionShaderProgram);
+        renderer.prepareDraw(view);
+        gl.disable(gl.CULL_FACE);
+        renderer.drawMesh(selectionMesh, { pos: true, color: true });
+        gl.enable(gl.CULL_FACE);
+      }
+    }, center, 4, (clientX, clientY, viewMatrix) => {
+      const boundsByRegion = currentBuilder.getRegionBoundsLocal();
+      const regionName = pickRegionAt(canvas, clientX, clientY, viewMatrix, currentRenderer.projMatrix, boundsByRegion);
+      selectRegion(regionName);
+    });
 
     if (!slider) {
       slider = new DoubleRangeSlider('slider-container', {
@@ -385,6 +535,8 @@ async function init() {
     currentStrideAxis = null;
     currentClusterCount = 0;
     currentRegionMeshes = [];
+    selectedRegionName = null;
+    selectionMesh = null;
     document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
