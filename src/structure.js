@@ -7,6 +7,10 @@ export class StructureBuilder {
     this.totalD = totalD;
     this.placedBlocks = [];
     this.blockCounts = {};
+    // World-space bounding box of each region, keyed by region name. Recorded
+    // from the region's full extent (not just its non-air blocks) so a
+    // region outline can still be drawn even for mostly/entirely-air regions.
+    this.regionBounds = {};
   }
 
   addRegionBlocks(regionName, { blockIds, palette, width, height, depth, localToWorld }) {
@@ -25,6 +29,32 @@ export class StructureBuilder {
         }
       }
     }
+
+    if (width > 0 && height > 0 && depth > 0) {
+      const c1 = localToWorld(0, 0, 0);
+      const c2 = localToWorld(width - 1, height - 1, depth - 1);
+      this.regionBounds[regionName] = {
+        minX: Math.min(c1[0], c2[0]), maxX: Math.max(c1[0], c2[0]),
+        minY: Math.min(c1[1], c2[1]), maxY: Math.max(c1[1], c2[1]),
+        minZ: Math.min(c1[2], c2[2]), maxZ: Math.max(c1[2], c2[2]),
+      };
+    }
+  }
+
+  // Returns each region's bounding box translated into the same local
+  // coordinate space that buildStructure() uses (relative to the overall
+  // structure's minimum corner), so a box drawn at these coords lines up
+  // exactly with the rendered structure.
+  getRegionBoundsLocal() {
+    const bounds = this.getActualBounds();
+    const local = {};
+    for (const [name, rb] of Object.entries(this.regionBounds)) {
+      local[name] = {
+        min: [rb.minX - bounds.minX, rb.minY - bounds.minY, rb.minZ - bounds.minZ],
+        max: [rb.maxX - bounds.minX, rb.maxY - bounds.minY, rb.maxZ - bounds.minZ],
+      };
+    }
+    return local;
   }
 
   getActualBounds() {

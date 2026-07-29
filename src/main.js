@@ -3,8 +3,28 @@ import { create3DBlocks } from './region.js';
 import { loadBlockData, ResourceLoader } from './resources.js';
 import { StructureBuilder } from './structure.js';
 import { DoubleRangeSlider } from './slider.js';
-const { StructureRenderer } = deepslate;
+const { StructureRenderer, Mesh } = deepslate;
 import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack } from './validate.js';
+
+// Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
+const REGION_BOX_COLORS = [
+  [1, 0.25, 0.25], [0.25, 1, 0.35], [0.3, 0.55, 1], [1, 0.85, 0.2],
+  [1, 0.3, 1], [0.25, 1, 1], [1, 0.6, 0.15], [0.65, 0.35, 1],
+];
+
+// Builds one line-cube mesh per region (in the structure's local coordinate
+// space) so region boundaries can be drawn through the same shader pipeline
+// as the grid. Called once per structure build, not per animation frame.
+function buildRegionMeshes(gl, builder) {
+  const boundsByRegion = builder.getRegionBoundsLocal();
+  return Object.entries(boundsByRegion).map(([name, { min, max }], i) => {
+    const color = REGION_BOX_COLORS[i % REGION_BOX_COLORS.length];
+    const mesh = new Mesh()
+      .addLineCube(min[0], min[1], min[2], max[0] + 1, max[1] + 1, max[2] + 1, color)
+      .rebuild(gl, { pos: true, color: true });
+    return { name, color, mesh };
+  });
+}
 
 
 function createProgressDisplay() {
@@ -51,7 +71,7 @@ async function init() {
 
   let currentStructure = null, currentRenderer = null, currentCamera = null,
     currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null,
-    currentStrideAxis = null, currentClusterCount = 0;
+    currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [];
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const getEnclosing = (root) => {
@@ -215,10 +235,21 @@ async function init() {
     Object.assign({ currentBuilder: builder, currentStructure: structure, currentRenderer: renderer },
       (currentBuilder = builder, currentStructure = structure, currentRenderer = renderer, {}));
 
+    // Built once here (not inside the render callback), so region boxes are
+    // reused across every frame instead of being rebuilt each render.
+    currentRegionMeshes = buildRegionMeshes(gl, builder);
+
     currentCamera = new InteractiveCanvas(canvas, view => {
       renderer.drawStructure(view);
       if (showGrid) {
         renderer.drawGrid(view);
+      }
+      if (currentRegionMeshes.length) {
+        // Same pipeline drawGrid() uses: one shader/prepare pass, then draw
+        // each region's mesh (mirrors how drawStructure batches its meshes).
+        renderer.setShader(renderer.gridShaderProgram);
+        renderer.prepareDraw(view);
+        currentRegionMeshes.forEach(({ mesh }) => renderer.drawMesh(mesh, { pos: true, color: true }));
       }
     }, center);
 
@@ -353,6 +384,7 @@ async function init() {
     originalBuffer = lastStackedNbt = null;
     currentStrideAxis = null;
     currentClusterCount = 0;
+    currentRegionMeshes = [];
     document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
