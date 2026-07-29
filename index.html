@@ -68,7 +68,10 @@
         <div id="manual-stack-controls" style="display:none; margin-top:10px;">
           <p style="margin:4px 0; font-size:13px; color: var(--text-secondary);">
             Click a region in the 3D view to select it, assign it as Step or Cap, then
-            save the pair. Repeat for as many Step/Cap pairs as you need, then Apply All.
+            save the pair. Repeat for as many Step/Cap pairs as you need. Each pair's
+            repeat count is computed automatically from the LCM of step widths sharing
+            an axis, so differently-sized Steps stay evenly spaced. The shared Stack
+            Count field above acts as a cycle multiplier on top of that.
           </p>
           <div class="button-group">
             <button id="manual-set-step">Set Selected as Step</button>
@@ -79,7 +82,7 @@
             Cap: <span id="manual-cap-label">(none selected)</span>
           </div>
           <div class="button-group" style="margin-top:8px;">
-            <button id="manual-save-config" disabled>💾 Save Pair (uses current Stack Count)</button>
+            <button id="manual-save-config" disabled>💾 Save Pair</button>
           </div>
 
           <div id="manual-config-list" style="margin-top:12px;"></div>

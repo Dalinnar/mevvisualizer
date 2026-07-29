@@ -6,7 +6,7 @@ import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
 import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack } from './validate.js';
-import { manualStackMulti, encodeManualConfig, decodeManualConfig } from './manualStack.js';
+import { manualStackMulti, resolveManualCycleCounts, encodeManualConfig, decodeManualConfig } from './manualStack.js';
 
 // Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
 const REGION_BOX_COLORS = [
@@ -350,36 +350,42 @@ async function init() {
     updateManualStatus();
   }
 
-  // Renders the list of saved Step/Cap pairs, each with its own editable
-  // stack count and a remove button. Editing a count re-applies the full
-  // stack immediately so the change is visible right away.
+  // Renders the list of saved Step/Cap pairs. Each pair's stack count is no
+  // longer set manually — it's auto-computed from the LCM of step widths
+  // sharing an axis (see resolveManualCycleCounts), scaled by the shared
+  // Stack Count field acting as a cycle multiplier. This keeps Caps from
+  // differently-sized Step regions evenly spaced instead of drifting apart.
   function renderManualConfigList() {
     const container = document.getElementById('manual-config-list');
     container.innerHTML = '';
 
+    if (!manualConfigs.length) return;
+
+    let resolved = null;
+    let errorMsg = null;
+    if (originalBuffer) {
+      try {
+        const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+        const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+        resolved = resolveManualCycleCounts(nbt, manualConfigs, cycles);
+      } catch (err) {
+        errorMsg = err.message;
+      }
+    }
+
     manualConfigs.forEach((cfg, i) => {
+      const info = resolved ? resolved[i] : null;
+      const countLabel = info
+        ? `×${info.stackCount} auto (stride ${info.stride}, ${info.direction > 0 ? '+' : '-'}${info.axis})`
+        : (errorMsg ? `⚠️ ${errorMsg}` : '…');
+
       const row = document.createElement('div');
       row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:4px;';
       row.innerHTML = `
-        <span style="flex:1;">${i + 1}. Step: <b>${cfg.stepName}</b> → Cap: <b>${cfg.capName}</b></span>
-        <label style="display:flex; align-items:center; gap:4px; white-space:nowrap;">
-          ×<input type="number" min="1" value="${cfg.stackCount}" class="manual-config-count" data-index="${i}" style="width:50px;">
-        </label>
+        <span style="flex:1;">${i + 1}. Step: <b>${cfg.stepName}</b> → Cap: <b>${cfg.capName}</b> — ${countLabel}</span>
         <button data-index="${i}" class="manual-remove-config" title="Remove this pair">✕</button>
       `;
       container.appendChild(row);
-    });
-
-    container.querySelectorAll('.manual-config-count').forEach(input => {
-      const commit = async () => {
-        const idx = parseInt(input.dataset.index, 10);
-        const val = Math.max(1, parseInt(input.value, 10) || 1);
-        input.value = val;
-        manualConfigs[idx].stackCount = val;
-        if (originalBuffer) await applyManualStack();
-      };
-      input.addEventListener('change', commit);
-      input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
     });
 
     container.querySelectorAll('.manual-remove-config').forEach(btn => {
@@ -402,14 +408,17 @@ async function init() {
     document.getElementById('manual-copy-link').disabled = !(manualConfigs.length && currentExtLink);
   }
 
-  // Runs manualStackMulti() with either the given list of configs (used
-  // when restoring from a shared URL) or the currently-saved list, then
-  // renders the result the same way automatic stacking does.
-  async function applyManualStack(configsOverride) {
+  // Runs manualStackMulti() with either the given list of pairs (used when
+  // restoring from a shared URL) or the currently-saved list, then renders
+  // the result the same way automatic stacking does. Per-pair stack counts
+  // are always re-derived from the LCM logic (see resolveManualCycleCounts),
+  // scaled by the shared Stack Count field as a cycle multiplier — never
+  // read from a per-pair value.
+  async function applyManualStack(pairsOverride) {
     if (!originalBuffer) { alert('Load a litematic first.'); return; }
 
-    const configs = configsOverride ?? manualConfigs;
-    if (!configs || configs.length === 0) {
+    const pairs = pairsOverride ?? manualConfigs;
+    if (!pairs || pairs.length === 0) {
       alert('Save at least one Step/Cap pair first.');
       return;
     }
@@ -418,9 +427,12 @@ async function init() {
     progressDisplay.textContent = 'Applying manual stack...';
 
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
-    let result;
+    const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+
+    let resolvedConfigs, result;
     try {
-      result = manualStackMulti(nbt, configs);
+      resolvedConfigs = resolveManualCycleCounts(nbt, pairs, cycles);
+      result = manualStackMulti(nbt, resolvedConfigs);
     } catch (err) {
       console.error(err);
       progressDisplay.style.display = 'none';
@@ -432,6 +444,8 @@ async function init() {
     document.getElementById('manual-status').textContent = result.results
       .map(r => `${r.stepName}→${r.capName}: ${r.direction > 0 ? '+' : '-'}${r.axis} ×${r.count}`)
       .join(' | ');
+
+    renderManualConfigList();
 
     lastStackedNbt = result.nbt;
     currentStrideAxis = null;
@@ -459,7 +473,8 @@ async function init() {
       return;
     }
 
-    const config = encodeManualConfig(manualConfigs);
+    const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+    const config = encodeManualConfig(manualConfigs, cycles);
 
     const url = new URL(window.location.href);
     url.search = '';
@@ -667,15 +682,16 @@ async function init() {
     // render immediately.
     const configParam = params.get('config');
     if (configParam) {
-      const configs = decodeManualConfig(configParam);
-      if (configs && configs.length) {
+      const decoded = decodeManualConfig(configParam);
+      if (decoded) {
         document.getElementById('mode-manual').checked = true;
         setManualMode(true);
-        manualConfigs = configs;
-        renderManualConfigList();
+        manualConfigs = decoded.pairs;
+        document.getElementById('stack-count').value = decoded.cycles;
         document.getElementById('stack-controls').style.display = 'block';
+        renderManualConfigList();
         updateManualStatus();
-        await applyManualStack(configs);
+        await applyManualStack(decoded.pairs);
         return;
       }
       console.warn('Failed to parse manual stacking config from URL; falling back to automatic detection.');
@@ -701,8 +717,12 @@ async function init() {
   }
 
   // ── Event listeners ────────────────────────────────────────────────────────
-  document.getElementById('stack-count').addEventListener('change', () => {
-    if (manualMode) return; // manual mode applies explicitly via its own button
+  document.getElementById('stack-count').addEventListener('change', async () => {
+    if (manualMode) {
+      renderManualConfigList();
+      if (manualConfigs.length && originalBuffer) await applyManualStack();
+      return;
+    }
     rerender();
   });
   document.getElementById('cluster-gap').addEventListener('change', () => {
@@ -727,17 +747,17 @@ async function init() {
     manualCurrentCap = selectedRegionName;
     updateManualStatus();
   });
-  document.getElementById('manual-save-config').addEventListener('click', () => {
+  document.getElementById('manual-save-config').addEventListener('click', async () => {
     if (!manualCurrentStep || !manualCurrentCap) {
       alert('Select both a Step region and a Cap region first.');
       return;
     }
-    const stackCount = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-    manualConfigs.push({ stepName: manualCurrentStep, capName: manualCurrentCap, stackCount });
+    manualConfigs.push({ stepName: manualCurrentStep, capName: manualCurrentCap });
     manualCurrentStep = null;
     manualCurrentCap = null;
     renderManualConfigList();
     updateManualStatus();
+    if (originalBuffer) await applyManualStack();
   });
   document.getElementById('manual-clear-configs').addEventListener('click', () => {
     manualConfigs = [];

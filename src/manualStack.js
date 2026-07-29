@@ -43,6 +43,16 @@ function boundsOverlap(aMin, aMax, bMin, bMax) {
   return aMin <= bMax && bMin <= aMax;
 }
 
+function gcd(a, b) {
+  a = Math.abs(a); b = Math.abs(b);
+  while (b) { [a, b] = [b, a % b]; }
+  return a;
+}
+
+function lcm(a, b) {
+  return Math.abs(a / gcd(a, b) * b);
+}
+
 // ── Direction detection ──────────────────────────────────────────────────────
 
 // Given the world-space Position/Size info (as returned by localToWorld) for
@@ -81,6 +91,74 @@ export function detectManualStackAxis(stepWorld, capWorld) {
   }
 
   return null;
+}
+
+// ── Cycle-count resolution ───────────────────────────────────────────────────
+
+// Given a list of Step/Cap pairs (each { stepName, capName }, no stackCount
+// needed), figures out each pair's detected axis/direction/stride, then
+// groups pairs by axis and computes the LCM of their strides within that
+// group. Each pair's stackCount is set to (groupLCM / itsOwnStride) * cycles,
+// so pairs on the same axis but with differently-sized Step regions all
+// extend the same total distance — keeping their Caps evenly spaced the same
+// way the originals were, rather than drifting apart due to mismatched
+// stride sizes. `cycles` (default 1) scales every pair's count up further,
+// repeating the whole aligned pattern.
+//
+// Returns an array of { stepName, capName, stackCount, axis, direction,
+// stride } — ready to pass straight into manualStackMulti. Throws if any
+// pair can't be found or isn't adjacent along a single axis.
+export function resolveManualCycleCounts(nbt, pairs, cycles = 1) {
+  const root = nbt.root || nbt;
+  const regions = root.get("Regions");
+
+  const infos = pairs.map(({ stepName, capName }) => {
+    const stepEntry = regions.get(stepName);
+    const capEntry = regions.get(capName);
+
+    if (!stepEntry) throw new Error(`Step region "${stepName}" not found`);
+    if (!capEntry) throw new Error(`Cap region "${capName}" not found`);
+    if (stepName === capName) {
+      throw new Error(`Step and Cap must be different regions (got "${stepName}" twice)`);
+    }
+
+    const stepPos = readVec3(stepEntry, "Position");
+    const stepSize = readVec3(stepEntry, "Size");
+    const capPos = readVec3(capEntry, "Position");
+    const capSize = readVec3(capEntry, "Size");
+
+    const stepWorld = localToWorld(stepPos, stepSize);
+    const capWorld = localToWorld(capPos, capSize);
+
+    const detected = detectManualStackAxis(stepWorld, capWorld);
+    if (!detected) {
+      throw new Error(
+        `Could not determine a stacking direction for "${stepName}" / "${capName}": ` +
+        'they must be directly adjacent (touching, with full overlap on the other ' +
+        'two axes) along exactly one axis.'
+      );
+    }
+
+    return { stepName, capName, axis: detected.axis, direction: detected.direction, stride: stepWorld.size[detected.axis] };
+  });
+
+  // LCM of strides, grouped per axis (direction doesn't affect the length
+  // math, only which way it grows).
+  const lcmByAxis = {};
+  for (const info of infos) {
+    lcmByAxis[info.axis] = lcmByAxis[info.axis] ? lcm(lcmByAxis[info.axis], info.stride) : info.stride;
+  }
+
+  const safeCycles = Math.max(1, cycles);
+
+  return infos.map(info => ({
+    stepName: info.stepName,
+    capName: info.capName,
+    axis: info.axis,
+    direction: info.direction,
+    stride: info.stride,
+    stackCount: Math.max(1, Math.round((lcmByAxis[info.axis] / info.stride) * safeCycles)),
+  }));
 }
 
 // ── Stacking ──────────────────────────────────────────────────────────────────
@@ -200,16 +278,19 @@ export function manualStackMulti(nbt, configs) {
 
 // ── Shareable URL configuration ───────────────────────────────────────────────
 //
-// Encodes an array of { stepName, capName, stackCount } pairs into a
-// compact, URL-safe base64 string suitable for use as a `config` query
-// parameter, alongside an `ext_link` parameter pointing at the source
-// litematic. See main.js's loadFromExtLink for the corresponding restore
-// logic.
+// Encodes a list of { stepName, capName } pairs plus a global cycle count
+// into a compact, URL-safe base64 string suitable for use as a `config`
+// query parameter, alongside an `ext_link` parameter pointing at the source
+// litematic. Per-pair stack counts are intentionally *not* stored — they're
+// re-derived via resolveManualCycleCounts() on load, from the same LCM logic
+// used everywhere else. See main.js's loadFromExtLink for the corresponding
+// restore logic.
 
-export function encodeManualConfig(configs) {
-  const json = JSON.stringify(
-    configs.map(c => ({ step: c.stepName, cap: c.capName, count: c.stackCount }))
-  );
+export function encodeManualConfig(pairs, cycles = 1) {
+  const json = JSON.stringify({
+    cycles,
+    pairs: pairs.map(p => ({ step: p.stepName, cap: p.capName })),
+  });
   // Percent-encode then repack as Latin1 so btoa (which only handles Latin1)
   // can safely base64-encode arbitrary UTF-8 region names.
   const latin1 = encodeURIComponent(json).replace(/%([0-9A-F]{2})/g,
@@ -224,17 +305,15 @@ export function decodeManualConfig(str) {
       Array.from(latin1).map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
     );
     const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed)) return null;
+    if (!parsed || !Array.isArray(parsed.pairs)) return null;
 
-    const configs = parsed
-      .filter(c => c && typeof c.step === 'string' && typeof c.cap === 'string')
-      .map(c => ({
-        stepName: c.step,
-        capName: c.cap,
-        stackCount: Math.max(1, parseInt(c.count, 10) || 1),
-      }));
+    const pairs = parsed.pairs
+      .filter(p => p && typeof p.step === 'string' && typeof p.cap === 'string')
+      .map(p => ({ stepName: p.step, capName: p.cap }));
 
-    return configs.length ? configs : null;
+    if (!pairs.length) return null;
+
+    return { pairs, cycles: Math.max(1, parseInt(parsed.cycles, 10) || 1) };
   } catch (err) {
     console.error('Failed to decode manual stacking config:', err);
     return null;
