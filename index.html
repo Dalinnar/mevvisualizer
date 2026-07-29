@@ -54,6 +54,37 @@
           <div id="enclosing-size-display" class="enclosing-size"></div>
         </div>
 
+        <div class="stacking-mode-section" style="margin-top:14px; border-top:1px solid var(--border-color, #444); padding-top:10px;">
+          <label style="margin-right:12px;">
+            <input type="radio" name="stacking-mode" id="mode-automatic" value="automatic" checked>
+            Automatic Stacking
+          </label>
+          <label>
+            <input type="radio" name="stacking-mode" id="mode-manual" value="manual">
+            Manual Stacking
+          </label>
+        </div>
+
+        <div id="manual-stack-controls" style="display:none; margin-top:10px;">
+          <p style="margin:4px 0; font-size:13px; color: var(--text-secondary);">
+            Click a region in the 3D view to select it, then assign it as Step or Cap below.
+            The Stack Count field above controls how many Step copies are generated.
+          </p>
+          <div class="button-group">
+            <button id="manual-set-step">Set Selected as Step</button>
+            <button id="manual-set-cap">Set Selected as Cap</button>
+          </div>
+          <div style="margin-top:8px; font-size:13px;">
+            Step: <span id="manual-step-label">(none selected)</span><br>
+            Cap: <span id="manual-cap-label">(none selected)</span>
+          </div>
+          <div class="button-group" style="margin-top:10px;">
+            <button id="manual-apply-button" disabled>▶️ Apply Manual Stack</button>
+            <button id="manual-copy-link" disabled>🔗 Copy Shareable Link</button>
+          </div>
+          <div id="manual-status" style="margin-top:6px; font-size:12px; color: var(--text-secondary);"></div>
+        </div>
+
       </div>
       <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
       <!-- ================= CANVAS + SLIDER ================= -->

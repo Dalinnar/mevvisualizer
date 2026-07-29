@@ -6,6 +6,7 @@ import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
 import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack } from './validate.js';
+import { manualStack, encodeManualConfig, decodeManualConfig } from './manualStack.js';
 
 // Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
 const REGION_BOX_COLORS = [
@@ -186,7 +187,9 @@ async function init() {
   let currentStructure = null, currentRenderer = null, currentCamera = null,
     currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null,
     currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [],
-    selectedRegionName = null, selectionMesh = null;
+    selectedRegionName = null, selectionMesh = null,
+    manualMode = false, manualStepName = null, manualCapName = null,
+    currentExtLink = null, lastAutoValidation = null;
 
   // Selects (or, if regionName is null/unmatched, deselects) a region: logs
   // it and rebuilds the small translucent highlight mesh for it. Not run
@@ -318,6 +321,115 @@ async function init() {
       currentRenderer.setStructure(currentStructure);
       currentCamera?.redraw();
     }
+  }
+
+  // ── Manual Stacking ─────────────────────────────────────────────────────────
+
+  // Toggles between the automatic and manual stacking UI. The Stack Count
+  // input (inside #stack-controls) is shared by both modes; only the
+  // automatic-only Cluster Gap control is hidden while in manual mode.
+  function setManualMode(enabled) {
+    manualMode = enabled;
+    document.getElementById('manual-stack-controls').style.display = enabled ? 'block' : 'none';
+
+    if (enabled) {
+      // Manual stacking only needs a Stack Count, not a cluster gap — and it
+      // doesn't require automatic validity, so show it as long as a file is
+      // loaded at all.
+      document.getElementById('gap-controls').style.display = 'none';
+      document.getElementById('stack-controls').style.display = originalBuffer ? 'block' : 'none';
+    } else if (lastAutoValidation?.isValid) {
+      document.getElementById('stack-controls').style.display = 'block';
+      document.getElementById('gap-controls').style.display =
+        lastAutoValidation.details.clusterCount > 1 ? '' : 'none';
+    } else {
+      document.getElementById('stack-controls').style.display = 'none';
+      document.getElementById('gap-controls').style.display = 'none';
+    }
+
+    updateManualStatus();
+  }
+
+  // Refreshes the Step/Cap labels and enables/disables the Apply and
+  // Copy-Link buttons based on current selections.
+  function updateManualStatus() {
+    document.getElementById('manual-step-label').textContent = manualStepName || '(none selected)';
+    document.getElementById('manual-cap-label').textContent = manualCapName || '(none selected)';
+    document.getElementById('manual-apply-button').disabled =
+      !(manualStepName && manualCapName && originalBuffer);
+    document.getElementById('manual-copy-link').disabled =
+      !(manualStepName && manualCapName && currentExtLink);
+  }
+
+  // Runs manualStack() with either the given step/cap/stackSize (used when
+  // restoring from a shared URL) or the currently-selected UI state, then
+  // renders the result the same way automatic stacking does.
+  async function applyManualStack(stepNameOverride, capNameOverride, stackSizeOverride) {
+    if (!originalBuffer) { alert('Load a litematic first.'); return; }
+
+    const stepName = stepNameOverride ?? manualStepName;
+    const capName = capNameOverride ?? manualCapName;
+    if (!stepName || !capName) { alert('Select both a Step region and a Cap region first.'); return; }
+
+    const stackSize = Math.max(1, parseInt(stackSizeOverride ?? document.getElementById('stack-count').value, 10) || 1);
+
+    progressDisplay.style.display = 'block';
+    progressDisplay.textContent = 'Applying manual stack...';
+
+    const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+    let result;
+    try {
+      result = manualStack(nbt, stepName, capName, stackSize);
+    } catch (err) {
+      console.error(err);
+      progressDisplay.style.display = 'none';
+      document.getElementById('manual-status').textContent = err.message;
+      alert(err.message);
+      return;
+    }
+
+    document.getElementById('manual-status').textContent =
+      `Stacking along ${result.direction > 0 ? '+' : '-'}${result.axis} (stride ${result.stride}).`;
+
+    lastStackedNbt = result.nbt;
+    currentStrideAxis = null;
+    currentClusterCount = 0;
+
+    const root = result.nbt.root || result.nbt;
+    const { w, h, d } = getEnclosing(root);
+    updateEnclosingSizeDisplay(w, h, d, null, 0);
+
+    const builder = new StructureBuilder(w, h, d);
+    await buildAndRender(builder, root.get("Regions"), w, h, d);
+  }
+
+  // Builds a shareable `?ext_link=&config=` URL for the current manual
+  // stacking configuration and copies it to the clipboard. Only available
+  // when the litematic itself was loaded via ?ext_link=, since the link
+  // recipient needs a URL to fetch the source file from.
+  function copyManualShareLink() {
+    if (!currentExtLink) {
+      alert('Shareable links are only available for litematics loaded via a ?ext_link= URL.');
+      return;
+    }
+    if (!manualStepName || !manualCapName) {
+      alert('Select both a Step region and a Cap region first.');
+      return;
+    }
+
+    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+    const config = encodeManualConfig({ stepName: manualStepName, capName: manualCapName, stackCount: stackSize });
+
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.searchParams.set('ext_link', currentExtLink);
+    url.searchParams.set('config', config);
+
+    navigator.clipboard?.writeText(url.toString()).then(() => {
+      alert('Shareable link copied to clipboard!');
+    }).catch(() => {
+      prompt('Copy this link:', url.toString());
+    });
   }
 
   function downloadLitematic(nbtFile, filename = 'stacked.litematic') {
@@ -497,6 +609,8 @@ async function init() {
     const extLink = params.get('ext_link');
     if (!extLink) return;
 
+    currentExtLink = extLink;
+
     const buffer = await fetchExternalFile(extLink);
     if (!buffer) return;
 
@@ -506,7 +620,29 @@ async function init() {
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     syncVersionInput(nbt);
+
+    // A `config` parameter means this link was shared from Manual Stacking:
+    // restore the mode, the Step/Cap selection, and the stack count, then
+    // render immediately.
+    const configParam = params.get('config');
+    if (configParam) {
+      const config = decodeManualConfig(configParam);
+      if (config) {
+        document.getElementById('mode-manual').checked = true;
+        setManualMode(true);
+        manualStepName = config.stepName;
+        manualCapName = config.capName;
+        document.getElementById('stack-count').value = config.stackCount;
+        document.getElementById('stack-controls').style.display = 'block';
+        updateManualStatus();
+        await applyManualStack(config.stepName, config.capName, config.stackCount);
+        return;
+      }
+      console.warn('Failed to parse manual stacking config from URL; falling back to automatic detection.');
+    }
+
     const validation = validateStackingStructure(nbt);
+    lastAutoValidation = validation;
 
     if (validation.isValid) {
       document.getElementById('stack-controls').style.display = 'block';
@@ -514,18 +650,45 @@ async function init() {
       document.getElementById('cluster-gap').value = 0;
 
       const hasMultipleClusters = validation.details.clusterCount > 1;
-      document.getElementById('gap-controls').style.display = hasMultipleClusters ? '' : 'none';
+      document.getElementById('gap-controls').style.display =
+        (!manualMode && hasMultipleClusters) ? '' : 'none';
 
       await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), 1, 0);
     } else {
-      document.getElementById('stack-controls').style.display = 'none';
+      document.getElementById('stack-controls').style.display = manualMode ? 'block' : 'none';
       await renderStructure(nbt);
     }
   }
 
   // ── Event listeners ────────────────────────────────────────────────────────
-  document.getElementById('stack-count').addEventListener('change', rerender);
-  document.getElementById('cluster-gap').addEventListener('change', rerender);
+  document.getElementById('stack-count').addEventListener('change', () => {
+    if (manualMode) return; // manual mode applies explicitly via its own button
+    rerender();
+  });
+  document.getElementById('cluster-gap').addEventListener('change', () => {
+    if (manualMode) return; // cluster gap doesn't apply to manual stacking
+    rerender();
+  });
+
+  document.getElementById('mode-automatic').addEventListener('change', e => {
+    if (e.target.checked) setManualMode(false);
+  });
+  document.getElementById('mode-manual').addEventListener('change', e => {
+    if (e.target.checked) setManualMode(true);
+  });
+
+  document.getElementById('manual-set-step').addEventListener('click', () => {
+    if (!selectedRegionName) { alert('Click a region in the 3D view first.'); return; }
+    manualStepName = selectedRegionName;
+    updateManualStatus();
+  });
+  document.getElementById('manual-set-cap').addEventListener('click', () => {
+    if (!selectedRegionName) { alert('Click a region in the 3D view first.'); return; }
+    manualCapName = selectedRegionName;
+    updateManualStatus();
+  });
+  document.getElementById('manual-apply-button').addEventListener('click', () => applyManualStack());
+  document.getElementById('manual-copy-link').addEventListener('click', () => copyManualShareLink());
 
   document.getElementById('clear-button').addEventListener('click', () => {
     currentCamera?.destroy();
@@ -537,6 +700,12 @@ async function init() {
     currentRegionMeshes = [];
     selectedRegionName = null;
     selectionMesh = null;
+    manualStepName = null;
+    manualCapName = null;
+    currentExtLink = null;
+    lastAutoValidation = null;
+    document.getElementById('mode-automatic').checked = true;
+    setManualMode(false);
     document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
@@ -546,6 +715,7 @@ async function init() {
     document.getElementById('cluster-gap').value = 0;
     document.getElementById('version-controls').style.display = 'none';
     document.getElementById('version-override').value = '';
+    document.getElementById('manual-status').textContent = '';
   });
 
   document.getElementById('download-materials').addEventListener('click', () => {
@@ -579,20 +749,28 @@ async function init() {
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     syncVersionInput(nbt); // ← add this
+    currentExtLink = null; // manually-uploaded files have no shareable source URL
+    updateManualStatus();
     const validation = validateStackingStructure(nbt);
+    lastAutoValidation = validation;
 
     if (validation.isValid) {
       document.getElementById('stack-controls').style.display = 'block';
       document.getElementById('stack-count').value = 1;
       document.getElementById('cluster-gap').value = 0;
 
-      // Show gap controls only when there are multiple clusters
+      // Show gap controls only when there are multiple clusters (and only
+      // in automatic mode; manual stacking doesn't use a cluster gap).
       const hasMultipleClusters = validation.details.clusterCount > 1;
-      document.getElementById('gap-controls').style.display = hasMultipleClusters ? '' : 'none';
+      document.getElementById('gap-controls').style.display =
+        (!manualMode && hasMultipleClusters) ? '' : 'none';
 
       await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), 1, 0);
     } else {
-      document.getElementById('stack-controls').style.display = 'none';
+      // Automatic stacking isn't available for this structure, but manual
+      // stacking doesn't require automatic validity — keep the shared Stack
+      // Count control visible if manual mode is active.
+      document.getElementById('stack-controls').style.display = manualMode ? 'block' : 'none';
       await renderStructure(nbt);
     }
   });

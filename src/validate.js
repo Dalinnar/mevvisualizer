@@ -1,10 +1,10 @@
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function nbtNum(node) {
+export function nbtNum(node) {
     return Number(node.value ?? node);
 }
 
-function localToWorld(position, size) {
+export function localToWorld(position, size) {
     const ox = size.x >= 0 ? position.x : position.x + size.x;
     const oy = size.y >= 0 ? position.y : position.y + size.y;
     const oz = size.z >= 0 ? position.z : position.z + size.z;
@@ -47,7 +47,7 @@ function getLitematicBounds(regions) {
     };
 }
 
-function deepCloneNbtCompound(compound) {
+export function deepCloneNbtCompound(compound) {
     return deepslate.NbtCompound.fromJson(compound.toJson());
 }
 
