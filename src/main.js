@@ -169,6 +169,7 @@ async function init() {
   const blockData = await loadBlockData();
   const resourceLoader = new ResourceLoader();
   let showGrid = true;
+  let showRegionBoxes = true;
 
   const canvas = document.getElementById('structure-display');
   const gl = canvas.getContext('webgl');
@@ -331,6 +332,18 @@ async function init() {
   function setManualMode(enabled) {
     manualMode = enabled;
     document.getElementById('manual-stack-controls').style.display = enabled ? 'block' : 'none';
+
+    // Entering manual mode with no saved pairs yet: the 3D view may still be
+    // showing an automatically-stacked render (e.g. "middle_0", "middle_1"
+    // copies from stackMiddle()). Manual stacking always resolves region
+    // names against the pristine original NBT, so if we let the user click
+    // regions from a stacked render, they can select names that don't exist
+    // in the original (see resolveManualCycleCounts's "region not found"
+    // error). Reset to the original, unstacked structure so what's
+    // clickable matches what manual stacking will actually operate on.
+    if (enabled && !manualConfigs.length && originalBuffer) {
+      renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)));
+    }
 
     if (enabled) {
       // Manual stacking only needs a Stack Count, not a cluster gap — and it
@@ -583,6 +596,17 @@ async function init() {
     const bounds = builder.getActualBounds();
     const center = ['x', 'y', 'z'].map(k => (bounds[`min${k.toUpperCase()}`] + bounds[`max${k.toUpperCase()}`]) / 2);
 
+    // Carry the previous camera's rotation/zoom/position forward instead of
+    // resetting to defaults every time this runs (e.g. on every stack-count
+    // change). Only fall back to the freshly-computed center/default zoom
+    // when there's no prior camera to inherit from (first load).
+    const prevCameraState = currentCamera ? {
+      xRotation: currentCamera.xRotation,
+      yRotation: currentCamera.yRotation,
+      viewDist: currentCamera.viewDist,
+      center: currentCamera.center,
+    } : null;
+
     currentCamera?.destroy();
     Object.assign({ currentBuilder: builder, currentStructure: structure, currentRenderer: renderer },
       (currentBuilder = builder, currentStructure = structure, currentRenderer = renderer, {}));
@@ -598,7 +622,7 @@ async function init() {
       if (showGrid) {
         renderer.drawGrid(view);
       }
-      if (currentRegionMeshes.length) {
+      if (showRegionBoxes && currentRegionMeshes.length) {
         // Same pipeline drawGrid() uses: one shader/prepare pass, then draw
         // each region's mesh (mirrors how drawStructure batches its meshes).
         renderer.setShader(renderer.gridShaderProgram);
@@ -614,11 +638,19 @@ async function init() {
         renderer.drawMesh(selectionMesh, { pos: true, color: true });
         gl.enable(gl.CULL_FACE);
       }
-    }, center, 4, (clientX, clientY, viewMatrix) => {
+    }, prevCameraState ? prevCameraState.center : center, prevCameraState ? prevCameraState.viewDist : 4, (clientX, clientY, viewMatrix) => {
       const boundsByRegion = currentBuilder.getRegionBoundsLocal();
       const regionName = pickRegionAt(canvas, clientX, clientY, viewMatrix, currentRenderer.projMatrix, boundsByRegion);
       selectRegion(regionName);
     });
+
+    // Rotation isn't a constructor param, so restore it post-construction.
+    // Safe to do synchronously: the constructor's own redraw() is deferred
+    // via requestAnimationFrame, so this runs before the first render.
+    if (prevCameraState) {
+      currentCamera.xRotation = prevCameraState.xRotation;
+      currentCamera.yRotation = prevCameraState.yRotation;
+    }
 
     if (!slider) {
       slider = new DoubleRangeSlider('slider-container', {
@@ -845,6 +877,11 @@ async function init() {
 
   document.getElementById('toggle-grid').addEventListener('change', (e) => {
     showGrid = e.target.checked;
+    currentCamera?.redraw(); // force re-render
+  });
+
+  document.getElementById('toggle-region-boxes').addEventListener('change', (e) => {
+    showRegionBoxes = e.target.checked;
     currentCamera?.redraw(); // force re-render
   });
 
