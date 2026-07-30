@@ -164,8 +164,11 @@ export function resolveManualCycleCounts(nbt, pairs, cycles = 1) {
 // ── Stacking ──────────────────────────────────────────────────────────────────
 
 // Builds a manually-stacked structure from a list of independent Step/Cap
-// configurations. Mutates and returns `nbt` (matching the convention used
-// by stackMiddle in validate.js).
+// configurations. Mutates and returns `nbt` (unlike stackMiddle in
+// validate.js, which was changed to build a fresh, non-mutating result so
+// its input can be cached and reused across repeated automatic-stacking
+// calls — manualStackMulti hasn't been changed and still mutates in place,
+// so each call still needs a fresh parse of the original buffer).
 //
 // `configs` is an array of { stepName, capName, stackCount }. Each pair is
 // resolved independently against the *original* region layout — regions not

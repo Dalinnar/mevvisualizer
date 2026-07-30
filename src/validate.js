@@ -51,6 +51,40 @@ export function deepCloneNbtCompound(compound) {
     return deepslate.NbtCompound.fromJson(compound.toJson());
 }
 
+// Clones a region entry cheaply for re-positioning. A region's Position is
+// the only thing stacking ever changes on a copy — everything else
+// (BlockStatePalette, BlockStates, TileEntities, Entities, PendingBlockTicks,
+// etc.) is read-only downstream and identical across copies, so it's shared
+// by reference instead of being deep-cloned. This matters because a naive
+// full clone (toJson()/fromJson() round trip) re-serializes a region's
+// entire block-state data for every single stacked copy, on every stack
+// change — the cost was scaling with stackSize * regionBlockCount for no
+// reason. Only the small Position compound is actually deep-cloned here.
+export function cloneRegionWithPosition(sourceEntry, newPos) {
+    const cloned = new deepslate.NbtCompound();
+    for (const key of sourceEntry.keys()) {
+        cloned.set(key, key === "Position" ? deepCloneNbtCompound(sourceEntry.get(key)) : sourceEntry.get(key));
+    }
+    const pos = cloned.get("Position");
+    for (const axis of ['x', 'y', 'z']) {
+        const node = pos.get(axis);
+        node.value !== undefined ? (node.value = newPos[axis]) : pos.set(axis, newPos[axis]);
+    }
+    return cloned;
+}
+
+// Generic, library-version-agnostic way to get a new NbtFile-like wrapper
+// that shares the same prototype (so .write()/.compression/etc. all still
+// work) but points at a different root — without needing to know deepslate's
+// NbtFile constructor signature. Used so stacking can return a fresh result
+// without mutating the caller's original, already-parsed NBT tree in place.
+function shallowCloneNbtFile(nbt, newRoot) {
+    const clone = Object.create(Object.getPrototypeOf(nbt));
+    Object.assign(clone, nbt);
+    clone.root = newRoot;
+    return clone;
+}
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 export function validateStackingStructure(nbt) {
@@ -258,16 +292,10 @@ export function stackMiddle(nbt, stackSize, gap = 0) {
         };
     }
 
-    // Clone an entry and overwrite its Position
-    function cloneWithPosition(sourceEntry, newPos) {
-        const cloned = deepCloneNbtCompound(sourceEntry);
-        const pos = cloned.get("Position");
-        for (const axis of ['x', 'y', 'z']) {
-            const node = pos.get(axis);
-            node.value !== undefined ? (node.value = newPos[axis]) : pos.set(axis, newPos[axis]);
-        }
-        return cloned;
-    }
+    // Clone an entry and overwrite its Position (cheap: shares block data by
+    // reference, only deep-clones the small Position tag — see
+    // cloneRegionWithPosition above).
+    const cloneWithPosition = cloneRegionWithPosition;
 
     // Compute the local-space position after shifting the parallel axis origin
     function shiftedPos(originalPos, originalSize, shift) {
@@ -373,15 +401,34 @@ export function stackMiddle(nbt, stackSize, gap = 0) {
         const node = compound.get(key);
         node.value !== undefined ? (node.value = val) : compound.set(key, val);
     }
-    setVal(enclosing, parallelAxis, maxP - minP + 1);
-    setVal(enclosing, strideAxis,   maxS - minS + 1);
-    setVal(enclosing, 'y',          maxY - minY + 1);
+
+    // Build a fresh EnclosingSize/Metadata/root instead of mutating the
+    // caller's nbt in place. This is what lets main.js parse the source
+    // litematic once and reuse that same parsed tree for every stack-count
+    // change, instead of re-parsing (and re-decompressing) the raw file
+    // bytes from scratch on every tick — stackMiddle no longer touches its
+    // input at all, so the same pristine parse is safe to reuse.
+    const newEnclosing = deepCloneNbtCompound(enclosing);
+    setVal(newEnclosing, parallelAxis, maxP - minP + 1);
+    setVal(newEnclosing, strideAxis,   maxS - minS + 1);
+    setVal(newEnclosing, 'y',          maxY - minY + 1);
+
+    const origMetadata = root.get("Metadata");
+    const newMetadata = new deepslate.NbtCompound();
+    for (const key of origMetadata.keys()) {
+        newMetadata.set(key, key === "EnclosingSize" ? newEnclosing : origMetadata.get(key));
+    }
 
     // ── Write back ────────────────────────────────────────────────────────────
     const regionsCompound = new deepslate.NbtCompound();
     for (const [name, region] of newRegions) {
         regionsCompound.set(name, region);
     }
-    root.set("Regions", regionsCompound);
-    return nbt;
+
+    const newRoot = new deepslate.NbtCompound();
+    for (const key of root.keys()) {
+        newRoot.set(key, key === "Metadata" ? newMetadata : key === "Regions" ? regionsCompound : root.get(key));
+    }
+
+    return shallowCloneNbtFile(nbt, newRoot);
 }

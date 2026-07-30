@@ -186,7 +186,7 @@ async function init() {
   const resources = resourceLoader.getResources();
 
   let currentStructure = null, currentRenderer = null, currentCamera = null,
-    currentBuilder = null, slider = null, originalBuffer = null, lastStackedNbt = null,
+    currentBuilder = null, slider = null, originalBuffer = null, originalNbt = null, lastStackedNbt = null,
     currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [],
     selectedRegionName = null, selectionMesh = null,
     manualMode = false, manualCurrentStep = null, manualCurrentCap = null,
@@ -719,7 +719,10 @@ async function init() {
     if (!originalBuffer) return;
     const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
     const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);
-    await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), stackSize, gap);
+    // stackMiddle() no longer mutates its input, so the cached parse can be
+    // reused directly here instead of re-parsing (and re-decompressing) the
+    // raw litematic bytes on every single stack-count/gap tick.
+    await renderStructure(originalNbt ?? deepslate.NbtFile.read(new Uint8Array(originalBuffer)), stackSize, gap);
   };
 
   // ── Fetch from external URL (with allorigins fallback) ────────────────────
@@ -772,6 +775,7 @@ async function init() {
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+    originalNbt = nbt;
     syncVersionInput(nbt);
     updateStackingModeVisibility(nbt);
 
@@ -792,7 +796,7 @@ async function init() {
       document.getElementById('gap-controls').style.display =
         (!manualMode && hasMultipleClusters) ? '' : 'none';
 
-      await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), 1, 0);
+      await renderStructure(originalNbt, 1, 0);
     } else {
       document.getElementById('stack-controls').style.display = manualMode ? 'block' : 'none';
       await renderStructure(nbt);
@@ -800,17 +804,30 @@ async function init() {
   }
 
   // ── Event listeners ────────────────────────────────────────────────────────
+
+  // Collapses a rapid burst of calls (e.g. holding down the stack-count
+  // spinner arrows) into a single trailing call, instead of doing a full
+  // rebuild for every intermediate value.
+  function debounce(fn, delayMs) {
+    let timer = null;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), delayMs);
+    };
+  }
+  const debouncedRerender = debounce(rerender, 120);
+
   document.getElementById('stack-count').addEventListener('change', async () => {
     if (manualMode) {
       renderManualConfigList();
       if (manualConfigs.length && originalBuffer) await applyManualStack();
       return;
     }
-    rerender();
+    debouncedRerender();
   });
   document.getElementById('cluster-gap').addEventListener('change', () => {
     if (manualMode) return; // cluster gap doesn't apply to manual stacking
-    rerender();
+    debouncedRerender();
   });
 
   document.getElementById('mode-automatic').addEventListener('change', e => {
@@ -858,6 +875,7 @@ async function init() {
     gl?.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
     originalBuffer = lastStackedNbt = null;
+    originalNbt = null;
     currentStrideAxis = null;
     currentClusterCount = 0;
     currentRegionMeshes = [];
@@ -920,6 +938,7 @@ async function init() {
 
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+    originalNbt = nbt;
     syncVersionInput(nbt); // ← add this
     currentExtLink = null; // manually-uploaded files have no shareable source URL
     updateStackingModeVisibility(nbt);
@@ -944,7 +963,7 @@ async function init() {
       document.getElementById('gap-controls').style.display =
         (!manualMode && hasMultipleClusters) ? '' : 'none';
 
-      await renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)), 1, 0);
+      await renderStructure(originalNbt, 1, 0);
     } else {
       // Automatic stacking isn't available for this structure, but manual
       // stacking doesn't require automatic validity — keep the shared Stack

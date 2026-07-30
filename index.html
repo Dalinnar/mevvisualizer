@@ -157,29 +157,24 @@
       fileDropArea.classList.remove('hover');
       });
 
-      // Handle drop
+      // Handle drop: assign the dropped file to the real #file-input element
+      // and dispatch a 'change' event on it, so the actual loading logic in
+      // main.js (which already listens for #file-input's 'change' event)
+      // picks it up — the same code path as browsing for a file, just
+      // triggered a different way. A FileList can't be constructed directly,
+      // so a DataTransfer is used to build one.
       fileDropArea.addEventListener('drop', (e) => {
       e.preventDefault();
       fileDropArea.classList.remove('hover');
 
       const files = e.dataTransfer.files;
       if (files.length > 0) {
-        handleFile(files[0]);
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(files[0]);
+        fileInput.files = dataTransfer.files;
+        fileInput.dispatchEvent(new Event('change'));
       }
       });
-
-      // Handle file selection via input
-      fileInput.addEventListener('change', (e) => {
-      if (fileInput.files.length > 0) {
-        handleFile(fileInput.files[0]);
-      }
-      });
-
-      // Your existing file handling function
-      function handleFile(file) {
-      console.log('Selected file:', file.name);
-      // Call your existing code to load the Litematic
-      }
     </script>
       <script>
       const panel = document.getElementById('controls-panel');
