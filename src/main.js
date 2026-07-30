@@ -219,6 +219,22 @@ async function init() {
     return { w: n("x"), h: n("y"), d: n("z") };
   };
 
+  // Automatic/Manual stacking only make sense with more than 2 regions (a
+  // Step/Cap or Start/End pair alone leaves nothing to stack in between).
+  // Shows/hides the mode-toggle section accordingly, and if the section is
+  // being hidden while manual mode was active, falls back to automatic.
+  function updateStackingModeVisibility(nbt) {
+    const root = nbt.root ?? nbt;
+    const regionCount = Array.from(root.get("Regions").keys()).length;
+    const visible = regionCount > 2;
+    document.getElementById('stacking-mode-section').style.display = visible ? '' : 'none';
+    if (!visible && manualMode) {
+      document.getElementById('mode-automatic').checked = true;
+      setManualMode(false);
+    }
+    return visible;
+  }
+
   // Renders "Size: n x n x n" with the axis that grows via stacking (strideAxis)
   // as an editable <input>, and — when the structure has more than one cluster,
   // so the "Cluster Gap" control actually does something — the parallel axis
@@ -757,6 +773,7 @@ async function init() {
     progressDisplay.textContent = 'Parsing NBT...';
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     syncVersionInput(nbt);
+    updateStackingModeVisibility(nbt);
 
     // A `config` parameter means a manual stacking configuration should be
     // restored onto this file — regardless of whether it came via ?ext_link=
@@ -853,6 +870,7 @@ async function init() {
     lastAutoValidation = null;
     document.getElementById('mode-automatic').checked = true;
     setManualMode(false);
+    document.getElementById('stacking-mode-section').style.display = 'none';
     renderManualConfigList();
     clearConfigFromUrl();
     document.getElementById('enclosing-size-display').innerHTML = '';
@@ -904,6 +922,7 @@ async function init() {
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     syncVersionInput(nbt); // ← add this
     currentExtLink = null; // manually-uploaded files have no shareable source URL
+    updateStackingModeVisibility(nbt);
     updateManualStatus();
 
     // If the URL already carries a manual stacking `config` (e.g. the page
