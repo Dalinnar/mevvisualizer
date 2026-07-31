@@ -41,6 +41,18 @@
             Show Region Boxes
           </label>
         </div>
+        <div id="region-edit-controls" style="display:none; margin-top:10px; border-top:1px solid var(--border-color, #444); padding-top:10px;">
+          <p style="margin:4px 0; font-size:12px; color: var(--text-secondary);">
+            Click a region to select it, then use the arrow keys to move it (X/Z),
+            H/Y to move it up/down (Y), or Delete to remove it. These edits only
+            affect what's on screen until you save them.
+          </p>
+          <div class="button-group">
+            <button id="save-region-edits" disabled>💾 Save Region Edits</button>
+          </div>
+          <div id="region-edit-status" style="margin-top:6px; font-size:12px; color: var(--text-secondary);"></div>
+        </div>
+
         <div id="version-controls" style="display:none; margin-top:10px;">
           <label>NBT Version:</label>
           <input id="version-override" type="number" min="1" max="99"
@@ -111,6 +123,45 @@
             <span>mine<span class="accent">mev</span> renderer</span>
           </div>
           <canvas id="structure-display" width="600" height="400"></canvas>
+
+          <!-- ============ SELECTION HUD (shown whenever a region is selected) ============ -->
+          <div id="selection-hud" class="selection-hud hidden">
+            <div class="selection-hud-name" id="selection-hud-name">-</div>
+            <div class="selection-hud-keys">
+              <span class="hud-key">◄►▲▼</span> move X/Z
+              <span class="hud-sep">·</span>
+              <span class="hud-key">H</span>/<span class="hud-key">Y</span> up/down
+              <span class="hud-sep">·</span>
+              <span class="hud-key">C</span> clone
+              <span class="hud-sep">·</span>
+              <span class="hud-key">Del</span> delete
+            </div>
+          </div>
+
+          <!-- ============ CLONE GUI (press "C" with a region selected) ============ -->
+          <div id="clone-gui" class="clone-gui hidden">
+            <div class="clone-gui-header">🧬 Clone Region</div>
+            <div class="clone-gui-target">Cloning: <span id="clone-gui-target-name">-</span></div>
+
+            <div class="clone-gui-row">
+              <label for="clone-offset-x">X</label>
+              <input id="clone-offset-x" type="number" step="1" value="0">
+            </div>
+            <div class="clone-gui-row">
+              <label for="clone-offset-y">Y</label>
+              <input id="clone-offset-y" type="number" step="1" value="0">
+            </div>
+            <div class="clone-gui-row">
+              <label for="clone-offset-z">Z</label>
+              <input id="clone-offset-z" type="number" step="1" value="0">
+            </div>
+
+            <div class="clone-gui-actions">
+              <button id="clone-confirm">✅ Clone</button>
+              <button id="clone-cancel">✖️ Cancel</button>
+            </div>
+            <div class="clone-gui-hint">C toggles · Enter clones · Esc cancels</div>
+          </div>
         </div>
         <div class="double-slider-container" id="slider-container">
           <!-- Slider thumbs and range will be inserted here by JS -->

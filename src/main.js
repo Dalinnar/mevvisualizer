@@ -5,7 +5,7 @@ import { StructureBuilder } from './structure.js';
 import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
-import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack } from './validate.js';
+import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack, localToWorld, nbtNum, cloneRegionWithPosition } from './validate.js';
 import { manualStackMulti, resolveManualCycleCounts, encodeManualConfig, decodeManualConfig } from './manualStack.js';
 
 // Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
@@ -190,13 +190,46 @@ async function init() {
     currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [],
     selectedRegionName = null, selectionMesh = null,
     manualMode = false, manualCurrentStep = null, manualCurrentCap = null,
-    manualConfigs = [], currentExtLink = null, lastAutoValidation = null;
+    manualConfigs = [], currentExtLink = null, lastAutoValidation = null,
+    // The root NBT compound backing whatever is currently on screen (post
+    // auto/manual stack if any, otherwise the original) — kept in sync so
+    // the keyboard region-editing controls (move/delete) always mutate the
+    // exact Regions compound that's actually being rendered.
+    currentActiveRoot = null,
+    // True once a move/delete has happened since the last save (or load).
+    // Auto/manual stacking always re-derive from originalBuffer, so moves
+    // are invisible to them until "Save Region Edits" bakes the current
+    // layout back into originalBuffer/originalNbt.
+    hasUnsavedRegionEdits = false,
+    // True while the "C" clone GUI overlay is open. Kept separate from the
+    // GUI element's own visibility so the keydown handler can toggle it
+    // without querying the DOM every keystroke.
+    cloneGuiOpen = false;
+
+  function showRegionEditControls(show) {
+    document.getElementById('region-edit-controls').style.display = show ? 'block' : 'none';
+  }
+
+  function updateSaveEditsButton() {
+    const btn = document.getElementById('save-region-edits');
+    const status = document.getElementById('region-edit-status');
+    btn.disabled = !hasUnsavedRegionEdits;
+    status.textContent = hasUnsavedRegionEdits
+      ? 'Unsaved moves/deletes — stacking will ignore them until saved.'
+      : '';
+  }
 
   // Selects (or, if regionName is null/unmatched, deselects) a region: logs
   // it and rebuilds the small translucent highlight mesh for it. Not run
   // per-frame — only when the selection actually changes via a click.
   function selectRegion(regionName) {
+    // The clone GUI's offsets/defaults are specific to whatever was selected
+    // when it opened, so swapping the selection (clicking another region)
+    // closes it rather than leaving it silently targeting the old one.
+    if (cloneGuiOpen && regionName !== selectedRegionName) closeCloneGui();
+
     selectedRegionName = regionName;
+    updateSelectionHud(regionName);
 
     if (!regionName || !currentBuilder) {
       selectionMesh = null;
@@ -210,6 +243,240 @@ async function init() {
     const boxMax = [max[0] + 1, max[1] + 1, max[2] + 1];
     selectionMesh = buildBoxFillMesh(gl, min, boxMax, [0.55, 0.55, 0.55]);
     currentCamera?.redraw();
+  }
+
+  // Shows the "◄►▲▼ move · H/Y up/down · C clone · Del delete" HUD over the
+  // canvas whenever a region is selected, and hides it on deselect. Purely
+  // informational — doesn't itself bind any keys.
+  function updateSelectionHud(regionName) {
+    const hud = document.getElementById('selection-hud');
+    if (!regionName) {
+      hud.classList.add('hidden');
+      return;
+    }
+    document.getElementById('selection-hud-name').textContent = regionName;
+    hud.classList.remove('hidden');
+  }
+
+  // ── Region editing (keyboard move/delete) ───────────────────────────────────
+
+  function readRegionVec(entry, tag) {
+    const v = entry.get(tag);
+    return { x: nbtNum(v.get("x")), y: nbtNum(v.get("y")), z: nbtNum(v.get("z")) };
+  }
+
+  function nudgeRegionPosition(entry, dx, dy, dz) {
+    const pos = entry.get("Position");
+    for (const [axis, delta] of [['x', dx], ['y', dy], ['z', dz]]) {
+      if (!delta) continue;
+      const node = pos.get(axis);
+      const next = nbtNum(node) + delta;
+      node.value !== undefined ? (node.value = next) : pos.set(axis, next);
+    }
+  }
+
+  // Recomputes EnclosingSize from the actual bounding box of every remaining
+  // region (same math as manualStackMulti's patch step), so a downloaded
+  // litematic stays consistent after moving/deleting regions via keyboard.
+  function recomputeEnclosingSize(root) {
+    const regions = root.get("Regions");
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const name of regions.keys()) {
+      const entry = regions.get(name);
+      const { bounds: b } = localToWorld(readRegionVec(entry, "Position"), readRegionVec(entry, "Size"));
+      minX = Math.min(minX, b.minX); maxX = Math.max(maxX, b.maxX);
+      minY = Math.min(minY, b.minY); maxY = Math.max(maxY, b.maxY);
+      minZ = Math.min(minZ, b.minZ); maxZ = Math.max(maxZ, b.maxZ);
+    }
+    if (!isFinite(minX)) return; // no regions left
+
+    const enclosing = root.get("Metadata").get("EnclosingSize");
+    const setAxis = (axis, val) => {
+      const node = enclosing.get(axis);
+      node.value !== undefined ? (node.value = val) : enclosing.set(axis, val);
+    };
+    setAxis('x', maxX - minX + 1);
+    setAxis('y', maxY - minY + 1);
+    setAxis('z', maxZ - minZ + 1);
+  }
+
+  // Rebuilds the 3D view from currentActiveRoot's current Regions (after a
+  // move/delete), re-selecting the same region afterward if it still exists
+  // so the highlight and further nudges keep working without re-clicking.
+  async function rerenderCurrentRegions() {
+    if (!currentActiveRoot) return;
+    const regions = currentActiveRoot.get("Regions");
+    const stillSelected = selectedRegionName && regions.has(selectedRegionName) ? selectedRegionName : null;
+
+    const { w, h, d } = getEnclosing(currentActiveRoot);
+    const builder = new StructureBuilder(w, h, d);
+    await buildAndRender(builder, regions, w, h, d);
+
+    if (stillSelected) selectRegion(stillSelected);
+  }
+
+  function moveSelectedRegion(dx, dy, dz) {
+    if (!selectedRegionName || !currentActiveRoot) return;
+    const regions = currentActiveRoot.get("Regions");
+    const entry = regions.get(selectedRegionName);
+    if (!entry) return;
+    nudgeRegionPosition(entry, dx, dy, dz);
+    recomputeEnclosingSize(currentActiveRoot);
+    hasUnsavedRegionEdits = true;
+    updateSaveEditsButton();
+    debouncedRegionRerender();
+  }
+
+  function deleteSelectedRegion() {
+    if (!selectedRegionName || !currentActiveRoot) return;
+    const regions = currentActiveRoot.get("Regions");
+    if (!regions.has(selectedRegionName)) return;
+    if (regions.size <= 1) {
+      alert("Can't delete the last remaining region.");
+      return;
+    }
+    regions.delete(selectedRegionName);
+    recomputeEnclosingSize(currentActiveRoot);
+    selectedRegionName = null;
+    selectionMesh = null;
+    updateSelectionHud(null);
+    hasUnsavedRegionEdits = true;
+    updateSaveEditsButton();
+    closeCloneGui();
+    rerenderCurrentRegions();
+  }
+
+  // ── Region cloning ("C" GUI) ─────────────────────────────────────────────────
+  // Picks the first unused "<baseName>_clone", "<baseName>_clone2", ... name
+  // so repeated cloning (including cloning a clone) never collides with an
+  // existing region.
+  function uniqueCloneName(regions, baseName) {
+    let name = `${baseName}_clone`;
+    let n = 1;
+    while (regions.has(name)) {
+      n += 1;
+      name = `${baseName}_clone${n}`;
+    }
+    return name;
+  }
+
+  // Opens the transparent clone overlay for the currently selected region,
+  // pre-filling the X offset with the region's own width so the default
+  // clone lands fully clear of the original instead of overlapping it.
+  function openCloneGui() {
+    if (!selectedRegionName || !currentActiveRoot) return;
+    const regions = currentActiveRoot.get("Regions");
+    const entry = regions.get(selectedRegionName);
+    if (!entry) return;
+
+    const size = readRegionVec(entry, "Size");
+    document.getElementById('clone-gui-target-name').textContent = selectedRegionName;
+    document.getElementById('clone-offset-x').value = Math.abs(size.x) || 1;
+    document.getElementById('clone-offset-y').value = 0;
+    document.getElementById('clone-offset-z').value = 0;
+
+    document.getElementById('clone-gui').classList.remove('hidden');
+    cloneGuiOpen = true;
+
+    const xInput = document.getElementById('clone-offset-x');
+    xInput.focus();
+    xInput.select();
+  }
+
+  function closeCloneGui() {
+    document.getElementById('clone-gui').classList.add('hidden');
+    cloneGuiOpen = false;
+  }
+
+  // Duplicates the selected region at Position + (dx, dy, dz), gives it a
+  // fresh unique name, and selects the new copy. Like moves/deletes, this is
+  // an on-screen edit only until "Save Region Edits" bakes it into
+  // originalBuffer/originalNbt.
+  function performClone() {
+    if (!selectedRegionName || !currentActiveRoot) return;
+    const regions = currentActiveRoot.get("Regions");
+    const entry = regions.get(selectedRegionName);
+    if (!entry) return;
+
+    const dx = parseInt(document.getElementById('clone-offset-x').value, 10) || 0;
+    const dy = parseInt(document.getElementById('clone-offset-y').value, 10) || 0;
+    const dz = parseInt(document.getElementById('clone-offset-z').value, 10) || 0;
+
+    const pos = readRegionVec(entry, "Position");
+    const newPos = { x: pos.x + dx, y: pos.y + dy, z: pos.z + dz };
+    const newName = uniqueCloneName(regions, selectedRegionName);
+
+    regions.set(newName, cloneRegionWithPosition(entry, newPos));
+    recomputeEnclosingSize(currentActiveRoot);
+    hasUnsavedRegionEdits = true;
+    updateSaveEditsButton();
+
+    closeCloneGui();
+    selectedRegionName = newName; // rerenderCurrentRegions re-selects whatever this points at
+    rerenderCurrentRegions();
+  }
+
+  // Bakes whatever is currently on screen (with any keyboard moves/deletes
+  // applied) into a fresh originalBuffer/originalNbt, via a write()+read()
+  // round trip through the *same* NbtFile settings (name/compression/
+  // littleEndian/bedrockHeader) the upload already had. This is the "reload
+  // the litematic" step: from this point on, auto stacking, manual stacking,
+  // and the Download button all treat the edited layout as the new base,
+  // exactly as if it had been uploaded that way to begin with.
+  async function saveRegionEditsAsOriginal() {
+    if (!currentActiveRoot || !originalNbt) return;
+
+    const rebuilt = new deepslate.NbtFile(
+      originalNbt.name, currentActiveRoot, originalNbt.compression,
+      originalNbt.littleEndian, originalNbt.bedrockHeader
+    );
+    const bytes = rebuilt.write();
+    originalBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    originalNbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+
+    // Drop any saved Step/Cap pairs that referenced a region which no longer
+    // exists (e.g. it was just deleted) instead of leaving the UI stuck
+    // showing a permanent "region not found" error for them.
+    const remainingNames = new Set(originalNbt.root.get('Regions').keys());
+    const before = manualConfigs.length;
+    manualConfigs = manualConfigs.filter(c => remainingNames.has(c.stepName) && remainingNames.has(c.capName));
+    if (manualConfigs.length !== before) {
+      manualCurrentStep = null;
+      manualCurrentCap = null;
+      renderManualConfigList();
+    }
+
+    hasUnsavedRegionEdits = false;
+    updateSaveEditsButton();
+    selectedRegionName = null;
+    selectionMesh = null;
+    updateSelectionHud(null);
+    currentExtLink = null; // baked edits no longer match the original source URL
+    clearConfigFromUrl();
+
+    syncVersionInput(originalNbt);
+    updateStackingModeVisibility(originalNbt);
+    updateManualStatus();
+
+    const validation = validateStackingStructure(originalNbt);
+    lastAutoValidation = validation;
+
+    if (manualMode && manualConfigs.length) {
+      await applyManualStack();
+      return;
+    }
+
+    if (!manualMode && validation.isValid) {
+      document.getElementById('stack-controls').style.display = 'block';
+      document.getElementById('stack-count').value = 1;
+      document.getElementById('cluster-gap').value = 0;
+      const hasMultipleClusters = validation.details.clusterCount > 1;
+      document.getElementById('gap-controls').style.display = hasMultipleClusters ? '' : 'none';
+      await renderStructure(originalNbt, 1, 0);
+    } else {
+      document.getElementById('stack-controls').style.display = manualMode ? 'block' : 'none';
+      await renderStructure(originalNbt);
+    }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -486,6 +753,7 @@ async function init() {
     currentClusterCount = 0;
 
     const root = result.nbt.root || result.nbt;
+    currentActiveRoot = root;
     const { w, h, d } = getEnclosing(root);
     updateEnclosingSizeDisplay(w, h, d, null, 0);
 
@@ -632,6 +900,7 @@ async function init() {
     currentRegionMeshes = buildRegionMeshes(gl, builder);
     selectedRegionName = null;
     selectionMesh = null;
+    updateSelectionHud(null);
 
     currentCamera = new InteractiveCanvas(canvas, view => {
       renderer.drawStructure(view);
@@ -704,6 +973,8 @@ async function init() {
       lastStackedNbt = stacked;
       root = stacked.root;
     }
+
+    currentActiveRoot = root;
 
     const { w, h, d } = getEnclosing(root);
     if (stackSize) {
@@ -778,6 +1049,9 @@ async function init() {
     originalNbt = nbt;
     syncVersionInput(nbt);
     updateStackingModeVisibility(nbt);
+    hasUnsavedRegionEdits = false;
+    updateSaveEditsButton();
+    showRegionEditControls(true);
 
     // A `config` parameter means a manual stacking configuration should be
     // restored onto this file — regardless of whether it came via ?ext_link=
@@ -816,6 +1090,62 @@ async function init() {
     };
   }
   const debouncedRerender = debounce(rerender, 120);
+  // Movement is applied immediately (so held/repeated keys accumulate
+  // correctly) but the expensive full rebuild is debounced, same as the
+  // stack-count/gap spinners above.
+  const debouncedRegionRerender = debounce(rerenderCurrentRegions, 100);
+
+  // ── Keyboard controls for the selected region ──────────────────────────────
+  // Arrow keys nudge the selection on the horizontal (X/Z) plane, "h"/"y"
+  // nudge it up/down on the vertical (Y) axis, and Delete (the "Supr" key)
+  // removes it. Remap by editing REGION_MOVE_KEYS below.
+  const REGION_MOVE_KEYS = {
+    ArrowLeft: ['x', -1], ArrowRight: ['x', 1],
+    ArrowUp: ['z', -1], ArrowDown: ['z', 1],
+    h: ['y', 1], H: ['y', 1],   // "h" raises the region
+    y: ['y', -1], Y: ['y', -1], // "y" lowers the region
+  };
+
+  document.addEventListener('keydown', e => {
+    // Escape always closes the clone GUI, even while an offset input is
+    // focused (checked before the input-tag bailout below).
+    if (cloneGuiOpen && e.key === 'Escape') {
+      e.preventDefault();
+      closeCloneGui();
+      return;
+    }
+
+    // Don't hijack typing in the stack-count/version/size/clone-offset
+    // number inputs — except Enter inside a clone-offset input, which
+    // confirms the clone instead of doing nothing.
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') {
+      if (cloneGuiOpen && e.key === 'Enter' && document.activeElement.closest('#clone-gui')) {
+        e.preventDefault();
+        performClone();
+      }
+      return;
+    }
+    if (!selectedRegionName) return;
+
+    if (e.key === 'c' || e.key === 'C') {
+      e.preventDefault();
+      cloneGuiOpen ? closeCloneGui() : openCloneGui();
+      return;
+    }
+
+    if (e.key === 'Delete') {
+      e.preventDefault();
+      deleteSelectedRegion();
+      return;
+    }
+
+    const binding = REGION_MOVE_KEYS[e.key];
+    if (!binding) return;
+    e.preventDefault();
+    const [axis, delta] = binding;
+    moveSelectedRegion(axis === 'x' ? delta : 0, axis === 'y' ? delta : 0, axis === 'z' ? delta : 0);
+  });
 
   document.getElementById('stack-count').addEventListener('change', async () => {
     if (manualMode) {
@@ -869,6 +1199,10 @@ async function init() {
   });
   document.getElementById('manual-apply-button').addEventListener('click', () => applyManualStack());
   document.getElementById('manual-copy-link').addEventListener('click', () => copyManualShareLink());
+  document.getElementById('save-region-edits').addEventListener('click', () => saveRegionEditsAsOriginal());
+
+  document.getElementById('clone-confirm').addEventListener('click', () => performClone());
+  document.getElementById('clone-cancel').addEventListener('click', () => closeCloneGui());
 
   document.getElementById('clear-button').addEventListener('click', () => {
     currentCamera?.destroy();
@@ -881,11 +1215,17 @@ async function init() {
     currentRegionMeshes = [];
     selectedRegionName = null;
     selectionMesh = null;
+    updateSelectionHud(null);
     manualCurrentStep = null;
     manualCurrentCap = null;
     manualConfigs = [];
     currentExtLink = null;
     lastAutoValidation = null;
+    currentActiveRoot = null;
+    hasUnsavedRegionEdits = false;
+    updateSaveEditsButton();
+    closeCloneGui();
+    showRegionEditControls(false);
     document.getElementById('mode-automatic').checked = true;
     setManualMode(false);
     document.getElementById('stacking-mode-section').style.display = 'none';
@@ -922,10 +1262,29 @@ async function init() {
   });
 
   document.getElementById('download-litematic').addEventListener('click', () => {
-    if (!lastStackedNbt) return alert("No stacked structure to download!");
+    // Stacking (auto or manual) produces its own dedicated NbtFile in
+    // lastStackedNbt — prefer that when present. Otherwise, fall back to
+    // whatever's actually on screen (the original load, or any moves/
+    // deletes/clones applied to it) by wrapping currentActiveRoot in a
+    // fresh NbtFile using the original upload's file settings, the same
+    // way saveRegionEditsAsOriginal() does.
+    const nbtToDownload = lastStackedNbt ?? (currentActiveRoot && originalNbt
+      ? new deepslate.NbtFile(
+          originalNbt.name, currentActiveRoot, originalNbt.compression,
+          originalNbt.littleEndian, originalNbt.bedrockHeader
+        )
+      : null);
+
+    if (!nbtToDownload) return alert("Load a litematic first!");
+
+    if (!lastStackedNbt) {
+      downloadLitematic(nbtToDownload, 'edited.litematic');
+      return;
+    }
+
     const stackSize = document.getElementById('stack-count').value || 1;
     const gap = document.getElementById('cluster-gap').value || 0;
-    downloadLitematic(lastStackedNbt, `stacked_${stackSize}x_gap${gap}.litematic`);
+    downloadLitematic(nbtToDownload, `stacked_${stackSize}x_gap${gap}.litematic`);
   });
 
   document.getElementById('file-input').addEventListener('change', async e => {
@@ -943,6 +1302,9 @@ async function init() {
     currentExtLink = null; // manually-uploaded files have no shareable source URL
     updateStackingModeVisibility(nbt);
     updateManualStatus();
+    hasUnsavedRegionEdits = false;
+    updateSaveEditsButton();
+    showRegionEditControls(true);
 
     // If the URL already carries a manual stacking `config` (e.g. the page
     // was opened via a shared link but the litematic itself had to be

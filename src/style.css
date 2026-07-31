@@ -592,3 +592,161 @@
         box-shadow: 0 0 6px var(--accent-glow);
       }
     
+/* ── Selection HUD ─────────────────────────────────────────────────────────
+   Shows the currently selected region's name and the active keyboard
+   controls (move / clone / delete). Appears on click, hides on deselect. */
+
+.selection-hud {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  padding: 8px 14px;
+  background: rgba(20, 20, 26, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  color: #f0f0f0;
+  font-size: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  z-index: 20;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.selection-hud.hidden {
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+}
+
+.selection-hud-name {
+  font-weight: 600;
+  margin-bottom: 3px;
+  word-break: break-word;
+}
+
+.selection-hud-keys {
+  color: var(--text-secondary, #bbb);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.hud-key {
+  display: inline-block;
+  padding: 1px 5px;
+  margin: 0 1px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.hud-sep {
+  margin: 0 5px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* ── Clone GUI overlay ─────────────────────────────────────────────────────
+   Appears on top of the canvas when a region is selected and "C" is
+   pressed. Needs .canvas-container to be position:relative (added below)
+   so it anchors to the canvas rather than the page. */
+
+.canvas-container {
+  position: relative; /* anchors .selection-hud / .clone-gui inside the canvas area */
+}
+
+.clone-gui {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  min-width: 190px;
+  padding: 14px 16px;
+  background: rgba(20, 20, 26, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  color: #f0f0f0;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.clone-gui.hidden {
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+}
+
+.clone-gui-header {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.clone-gui-target {
+  font-size: 11px;
+  color: var(--text-secondary, #aaa);
+  margin-bottom: 10px;
+  word-break: break-word;
+}
+
+.clone-gui-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.clone-gui-row label {
+  width: 14px;
+  font-weight: 600;
+  color: var(--text-secondary, #ccc);
+}
+
+.clone-gui-row input {
+  flex: 1;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: #fff;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.clone-gui-row input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.clone-gui-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.clone-gui-actions button {
+  flex: 1;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  padding: 5px 0;
+  font-size: 12px;
+}
+
+.clone-gui-actions button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.clone-gui-hint {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-secondary, #888);
+  text-align: center;
+}
