@@ -7,6 +7,27 @@ const {
 } = deepslate;
 
 const MCMETA = 'https://raw.githubusercontent.com/misode/mcmeta/';
+// Resolved against *this module's* own URL, not the host page's URL — so
+// this keeps working when resources.js is loaded from a CDN (e.g. embedded
+// on someone else's site) rather than served alongside its own index.html,
+// where a page-relative './src/blocklist.json' would 404.
+//
+// `import.meta.url` only exists in real ES modules — a bundle built with
+// format=iife/umd (for classic <script src="..."> use, see
+// docs/embedding.md) empties it out, which would make this throw at
+// load time. In that case blocklistUrl is resolved instead by
+// src/embed.js's own document.currentScript-based fallback (or via an
+// explicit call to setBlocklistUrl()) before loadBlockData() ever runs.
+let blocklistUrl;
+try {
+  blocklistUrl = new URL('./blocklist.json', import.meta.url).toString();
+} catch {
+  blocklistUrl = null;
+}
+
+export function setBlocklistUrl(url) {
+  blocklistUrl = url;
+}
 
 export function normalizeName(name) {
   if (typeof name === 'object' && name !== null) {
@@ -19,7 +40,15 @@ export function normalizeName(name) {
 }
 
 export async function loadBlockData() {
-  const res = await fetch('./src/blocklist.json');
+  if (!blocklistUrl) {
+    throw new Error(
+      "resources.js couldn't resolve blocklist.json's URL automatically " +
+      '(this happens when this module has been bundled into a non-ESM ' +
+      'script format). Call setBlocklistUrl(absoluteUrl) before ' +
+      'loadBlockData()/renderLitematicImage() runs.'
+    );
+  }
+  const res = await fetch(blocklistUrl);
   return await res.json();
 }
 

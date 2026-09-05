@@ -1,0 +1,14 @@
+{
+  "name": "mevrenderer",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Deepslate-based litematic viewer/generator, plus a DOM-free embed API for rendering a litematic straight to an <img>.",
+  "scripts": {
+    "build:embed": "esbuild src/embed.js --bundle --format=iife --global-name=mevrenderer --outfile=dist/mevrenderer-embed.js",
+    "build:embed:esm": "esbuild src/embed.js --bundle --format=esm --outfile=dist/mevrenderer-embed.esm.js",
+    "build": "npm run build:embed && npm run build:embed:esm && cp src/blocklist.json dist/blocklist.json"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

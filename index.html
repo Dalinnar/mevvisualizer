@@ -182,8 +182,11 @@
 
       window.addEventListener('resize', () => {
         resizeCanvas();
-        if (window.renderer && window.renderer.drawStructure) {
-          renderer.drawStructure();
+        // main.js exposes this so a resize (window resize, or a headless
+        // tool calling page.setViewport) forces a fresh draw instead of
+        // leaving the last frame stretched over the new canvas size.
+        if (window.mevRenderer && window.mevRenderer.redraw) {
+          window.mevRenderer.redraw();
         }
       });
 
@@ -237,6 +240,20 @@
         toggleBtn.classList.toggle('closed');
         mainContent.classList.toggle('panel-closed');
       });
+
+      // ?no_controls=true (also accepts 1/yes) hides the controls panel and
+      // its toggle button entirely — e.g. for embedding just the 3D view, or
+      // for headless screenshotting (see docs/headless-render.md).
+      (function applyNoControlsParam() {
+        const raw = (new URLSearchParams(window.location.search).get('no_controls') || '').toLowerCase();
+        const noControls = raw === 'true' || raw === '1' || raw === 'yes';
+        if (!noControls) return;
+
+        panel.style.display = 'none';
+        toggleBtn.style.display = 'none';
+        mainContent.classList.add('panel-closed');
+        document.body.classList.add('no-controls');
+      })();
     </script>
     </body>
   </html>

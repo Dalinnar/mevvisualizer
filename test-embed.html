@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<!--
+  Minimal local test for src/embed.js — no build step needed for this one,
+  since it imports the ES module directly (Option B in docs/embedding.md).
+
+  Usage:
+    npx serve .          (or any static server — NOT file://, see notes below)
+    open http://localhost:3000/test-embed.html?litematic=<url-to-a-.litematic>
+
+  If you don't pass ?litematic=, paste a URL into the input and hit "Render".
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>mevrenderer embed test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee; padding: 24px; }
+    input { width: 420px; padding: 8px; font-family: monospace; }
+    button { padding: 8px 16px; margin-left: 8px; }
+    #status { margin: 12px 0; font-family: monospace; font-size: 13px; color: #9c9; min-height: 1.2em; }
+    #preview { display: block; margin-top: 16px; border: 1px solid #333; max-width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>mevrenderer — embed API test</h1>
+  <p>Tests <code>src/embed.js</code> directly as an ES module (Option B — no bundling).
+     To test the bundled classic-script path (Option A, <code>dist/mevrenderer-embed.js</code>),
+     swap the import below for a <code>&lt;script src="dist/mevrenderer-embed.js"&gt;</code> tag
+     and call <code>mevrenderer.renderLitematicImage(...)</code> instead.</p>
+
+  <div>
+    <input id="url" type="text" placeholder="https://example.com/build.litematic">
+    <button id="go">Render</button>
+  </div>
+  <div id="status"></div>
+  <img id="preview" alt="">
+
+  <script src="https://unpkg.com/deepslate@0.25.1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
+  <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+
+  <script type="module">
+    import { renderLitematicImage } from './src/embed.js';
+
+    const statusEl = document.getElementById('status');
+    const urlInput = document.getElementById('url');
+    const preview = document.getElementById('preview');
+
+    const params = new URLSearchParams(window.location.search);
+    const preset = params.get('litematic');
+    if (preset) urlInput.value = preset;
+
+    async function run() {
+      const url = urlInput.value.trim();
+      if (!url) { statusEl.textContent = 'Paste a .litematic URL first.'; return; }
+
+      statusEl.textContent = 'Loading (first render also fetches ~a few MB of block textures)…';
+      preview.removeAttribute('src');
+
+      try {
+        const t0 = performance.now();
+        const dataUrl = await renderLitematicImage({
+          url,
+          width: 900,
+          height: 600,
+          onProgress: ({ stage, percent }) => { statusEl.textContent = `${stage} ${percent}%`; },
+        });
+        preview.src = dataUrl;
+        statusEl.textContent = `Done in ${Math.round(performance.now() - t0)}ms.`;
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    document.getElementById('go').addEventListener('click', run);
+    if (preset) run();
+  </script>
+</body>
+</html>

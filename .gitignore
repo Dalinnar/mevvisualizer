@@ -1,3 +1,7 @@
 .vscode
 *.litematic
 *.bak
+
+
+node_modules/
+package-lock.json

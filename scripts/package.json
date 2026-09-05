@@ -1,0 +1,8 @@
+{
+  "name": "mevrenderer-headless-scripts",
+  "private": true,
+  "description": "Headless-screenshot helper for the mevrenderer litematic viewer.",
+  "dependencies": {
+    "puppeteer": "^23.0.0"
+  }
+}

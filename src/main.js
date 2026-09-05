@@ -159,6 +159,37 @@ function createProgressDisplay() {
   return div;
 }
 
+// Computes an orbit-camera distance (from InteractiveCanvas's `center`) that
+// guarantees the whole structure's bounding sphere stays inside the frame,
+// no matter how the camera is rotated around that center. Using the sphere
+// (rather than fitting the box for the current rotation only) means the fit
+// stays valid as the user drags to look around, instead of only being
+// correct for the angle it was computed at.
+//
+// Matches deepslate's Renderer.getPerspective(): 70° vertical FOV, aspect
+// from the canvas's rendered (CSS) size, near/far 0.1/500.
+function computeFitViewDist(bounds, canvas, marginFactor = 1.1) {
+  const dx = bounds.maxX - bounds.minX;
+  const dy = bounds.maxY - bounds.minY;
+  const dz = bounds.maxZ - bounds.minZ;
+  const radius = 0.5 * Math.hypot(dx, dy, dz);
+
+  const width = canvas.clientWidth || canvas.width || 1;
+  const height = canvas.clientHeight || canvas.height || 1;
+  const aspect = width / height;
+
+  const vFov = 70 * Math.PI / 180;
+  const hFov = 2 * Math.atan(aspect * Math.tan(vFov / 2));
+  // Whichever axis (horizontal or vertical) has the narrower FOV is the one
+  // that would clip the sphere first, so fit against that one.
+  const limitingHalfAngle = Math.min(vFov, hFov) / 2;
+
+  if (radius <= 0 || !Number.isFinite(radius)) return 4;
+
+  const dist = radius / Math.sin(limitingHalfAngle);
+  return Math.max(dist * marginFactor, 2);
+}
+
 function syncVersionInput(nbt) {
   const root = nbt.root ?? nbt;
   document.getElementById('version-override').value = root.get('Version').value;
@@ -879,6 +910,10 @@ async function init() {
 
     const bounds = builder.getActualBounds();
     const center = ['x', 'y', 'z'].map(k => (bounds[`min${k.toUpperCase()}`] + bounds[`max${k.toUpperCase()}`]) / 2);
+    // Only used when there's no previous camera to inherit from (first
+    // load of a structure) — see prevCameraState below. A user's manual
+    // zoom/pan is never overridden by this.
+    const fitViewDist = computeFitViewDist(bounds, canvas);
 
     // Carry the previous camera's rotation/zoom/position forward instead of
     // resetting to defaults every time this runs (e.g. on every stack-count
@@ -923,7 +958,7 @@ async function init() {
         renderer.drawMesh(selectionMesh, { pos: true, color: true });
         gl.enable(gl.CULL_FACE);
       }
-    }, prevCameraState ? prevCameraState.center : center, prevCameraState ? prevCameraState.viewDist : 4, (clientX, clientY, viewMatrix) => {
+    }, prevCameraState ? prevCameraState.center : center, prevCameraState ? prevCameraState.viewDist : fitViewDist, (clientX, clientY, viewMatrix) => {
       const boundsByRegion = currentBuilder.getRegionBoundsLocal();
       const regionName = pickRegionAt(canvas, clientX, clientY, viewMatrix, currentRenderer.projMatrix, boundsByRegion);
       selectRegion(regionName);
@@ -936,6 +971,11 @@ async function init() {
       currentCamera.xRotation = prevCameraState.xRotation;
       currentCamera.yRotation = prevCameraState.yRotation;
     }
+
+    // Exposed so index.html's window-resize handler (and any external
+    // driver, e.g. a headless screenshot script) can force a redraw after
+    // resizing the canvas — see the `resize` listener in index.html.
+    window.mevRenderer = currentCamera;
 
     if (!slider) {
       slider = new DoubleRangeSlider('slider-container', {
@@ -950,10 +990,24 @@ async function init() {
     document.getElementById('slider-container').classList.add('active');
     renderer.setStructure(structure);
     progressDisplay.style.display = 'none';
+
+    // Signal that a frame reflecting the current structure/camera is on
+    // screen. Deferred one frame so the InteractiveCanvas's own initial
+    // redraw() (scheduled via requestAnimationFrame in its constructor)
+    // has actually run and the canvas isn't blank/stale when read.
+    requestAnimationFrame(() => {
+      window.mevRendererReady = true;
+      window.dispatchEvent(new CustomEvent('mev-render-complete'));
+    });
   }
 
   // ── Main render entry point ────────────────────────────────────────────────
   async function renderStructure(nbt, stackSize = null, gap = 0) {
+    // Cleared here and set once buildAndRender finishes below — a headless
+    // screenshot tool can poll/await window.mevRendererReady (or listen for
+    // the 'mev-render-complete' event) instead of guessing a fixed delay.
+    // See docs/headless-render.md.
+    window.mevRendererReady = false;
     progressDisplay.style.display = 'block';
     progressDisplay.textContent = stackSize ? 'Stacking...' : 'Loading structure...';
 
