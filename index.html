@@ -124,6 +124,23 @@
           </div>
           <canvas id="structure-display" width="600" height="400"></canvas>
 
+          <!-- ============ VIEW TOOLBAR (orthographic presets) ============ -->
+          <div id="view-toolbar" class="view-toolbar">
+            <div class="view-toolbar-group">
+              <button data-projection="perspective" class="active" title="Perspective camera">Persp</button>
+              <button data-projection="orthographic" title="Orthographic camera (no perspective distortion)">Ortho</button>
+            </div>
+            <div class="view-toolbar-group">
+              <button data-view="top" title="Orthographic view from above (north is up)">Top</button>
+              <button data-view="bottom" title="Orthographic view from below">Bottom</button>
+              <button data-view="north" title="Orthographic view from the north side (-Z)">North</button>
+              <button data-view="south" title="Orthographic view from the south side (+Z)">South</button>
+              <button data-view="east" title="Orthographic view from the east side (+X)">East</button>
+              <button data-view="west" title="Orthographic view from the west side (-X)">West</button>
+              <button data-view="iso" title="Isometric view">Iso</button>
+            </div>
+          </div>
+
           <!-- ============ SELECTION HUD (shown whenever a region is selected) ============ -->
           <div id="selection-hud" class="selection-hud hidden">
             <div class="selection-hud-name" id="selection-hud-name">-</div>
@@ -235,11 +252,48 @@
       const toggleBtn = document.getElementById('panel-toggle');
       const mainContent = document.getElementById('main-content');
 
+      function setPanelClosed(closed) {
+        panel.classList.toggle('closed', closed);
+        toggleBtn.classList.toggle('closed', closed);
+        mainContent.classList.toggle('panel-closed', closed);
+      }
+
       toggleBtn.addEventListener('click', () => {
-        panel.classList.toggle('closed');
-        toggleBtn.classList.toggle('closed');
-        mainContent.classList.toggle('panel-closed');
+        cancelAutoHide();
+        setPanelClosed(!panel.classList.contains('closed'));
       });
+
+      // Auto-hide the controls panel a few seconds after the page loads, so
+      // the 3D view is unobstructed. It stays open if the person is using it:
+      // hovering delays the hide until the pointer leaves, and clicking or
+      // focusing anything in the panel (or using the toggle) cancels it.
+      const AUTO_HIDE_DELAY_MS = 4000;
+      const AUTO_HIDE_AFTER_LEAVE_MS = 1200;
+      let autoHideTimer = null, autoHideCancelled = false, panelHovered = false;
+
+      function cancelAutoHide() {
+        autoHideCancelled = true;
+        clearTimeout(autoHideTimer);
+        autoHideTimer = null;
+      }
+      function scheduleAutoHide(ms) {
+        clearTimeout(autoHideTimer);
+        autoHideTimer = setTimeout(() => {
+          if (autoHideCancelled) return;
+          if (panelHovered) return; // re-armed on pointerleave
+          setPanelClosed(true);
+        }, ms);
+      }
+
+      panel.addEventListener('pointerenter', () => { panelHovered = true; });
+      panel.addEventListener('pointerleave', () => {
+        panelHovered = false;
+        if (!autoHideCancelled) scheduleAutoHide(AUTO_HIDE_AFTER_LEAVE_MS);
+      });
+      panel.addEventListener('pointerdown', cancelAutoHide);
+      panel.addEventListener('focusin', cancelAutoHide);
+
+      scheduleAutoHide(AUTO_HIDE_DELAY_MS);
 
       // ?no_controls=true (also accepts 1/yes) hides the controls panel and
       // its toggle button entirely — e.g. for embedding just the 3D view, or

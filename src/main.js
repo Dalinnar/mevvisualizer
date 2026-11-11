@@ -196,6 +196,33 @@ function syncVersionInput(nbt) {
   document.getElementById('version-controls').style.display = 'block';
 }
 
+// Orthographic view presets as camera pitch (x) / yaw (y), in radians. The
+// name is the side the camera sits on: "north" looks at the structure from
+// the -Z side, "east" from the +X side, and so on.
+const VIEW_PRESETS = {
+  top:    { x:  Math.PI / 2, y: 0 },
+  bottom: { x: -Math.PI / 2, y: 0 },
+  north:  { x: 0, y:  Math.PI },
+  south:  { x: 0, y: 0 },
+  east:   { x: 0, y: -Math.PI / 2 },
+  west:   { x: 0, y:  Math.PI / 2 },
+  iso:    { x: Math.atan(1 / Math.SQRT2), y: -Math.PI / 4 },
+};
+
+function matchViewPreset(x, y) {
+  const TAU = Math.PI * 2, EPS = 0.02;
+  const angDiff = (a, b) => {
+    let d = (a - b) % TAU;
+    if (d > Math.PI) d -= TAU;
+    if (d < -Math.PI) d += TAU;
+    return Math.abs(d);
+  };
+  for (const [name, p] of Object.entries(VIEW_PRESETS)) {
+    if (Math.abs(x - p.x) < EPS && angDiff(y, p.y) < EPS) return name;
+  }
+  return null;
+}
+
 async function init() {
   const blockData = await loadBlockData();
   const resourceLoader = new ResourceLoader();
@@ -908,6 +935,21 @@ async function init() {
       useInvisibleBlockBuffer: false, chunkSize: 16
     });
 
+    // Orthographic support: deepslate hard-codes a perspective projection, so
+    // after its prepareDraw() has uploaded that one, overwrite the active
+    // program's mProj uniform with an orthographic matrix while the camera
+    // is in ortho mode. Every draw path (structure, grid, region boxes,
+    // selection) goes through prepareDraw, so they all pick this up.
+    const basePrepareDraw = renderer.prepareDraw.bind(renderer);
+    renderer.prepareDraw = view => {
+      basePrepareDraw(view);
+      const cam = currentCamera;
+      if (!cam || !cam.ortho) return;
+      const program = gl.getParameter(gl.CURRENT_PROGRAM);
+      const loc = program && gl.getUniformLocation(program, 'mProj');
+      if (loc) gl.uniformMatrix4fv(loc, false, cam.getOrthoProjection(canvasAspect()));
+    };
+
     const bounds = builder.getActualBounds();
     const center = ['x', 'y', 'z'].map(k => (bounds[`min${k.toUpperCase()}`] + bounds[`max${k.toUpperCase()}`]) / 2);
     // Only used when there's no previous camera to inherit from (first
@@ -924,6 +966,7 @@ async function init() {
       yRotation: currentCamera.yRotation,
       viewDist: currentCamera.viewDist,
       center: currentCamera.center,
+      ortho: currentCamera.ortho,
     } : null;
 
     currentCamera?.destroy();
@@ -960,7 +1003,7 @@ async function init() {
       }
     }, prevCameraState ? prevCameraState.center : center, prevCameraState ? prevCameraState.viewDist : fitViewDist, (clientX, clientY, viewMatrix) => {
       const boundsByRegion = currentBuilder.getRegionBoundsLocal();
-      const regionName = pickRegionAt(canvas, clientX, clientY, viewMatrix, currentRenderer.projMatrix, boundsByRegion);
+      const regionName = pickRegionAt(canvas, clientX, clientY, viewMatrix, getActiveProjMatrix(), boundsByRegion);
       selectRegion(regionName);
     });
 
@@ -970,7 +1013,12 @@ async function init() {
     if (prevCameraState) {
       currentCamera.xRotation = prevCameraState.xRotation;
       currentCamera.yRotation = prevCameraState.yRotation;
+      currentCamera.ortho = !!prevCameraState.ortho;
     }
+    currentCamera.depthRadius = 0.5 * Math.hypot(
+      bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ);
+    currentCamera.onViewChange = updateViewToolbar;
+    updateViewToolbar();
 
     // Exposed so index.html's window-resize handler (and any external
     // driver, e.g. a headless screenshot script) can force a redraw after
@@ -1257,6 +1305,45 @@ async function init() {
 
   document.getElementById('clone-confirm').addEventListener('click', () => performClone());
   document.getElementById('clone-cancel').addEventListener('click', () => closeCloneGui());
+
+  // ── Orthographic view toolbar ──────────────────────────────────────────────
+  function canvasAspect() {
+    return (canvas.clientWidth || canvas.width || 1) / (canvas.clientHeight || canvas.height || 1);
+  }
+
+  // Projection currently on screen, so click-picking unprojects correctly in
+  // both perspective and orthographic mode.
+  function getActiveProjMatrix() {
+    if (currentCamera?.ortho) return currentCamera.getOrthoProjection(canvasAspect());
+    return currentRenderer.projMatrix;
+  }
+
+  function updateViewToolbar() {
+    const bar = document.getElementById('view-toolbar');
+    if (!bar) return;
+    const ortho = !!currentCamera?.ortho;
+    const active = ortho ? matchViewPreset(currentCamera.xRotation, currentCamera.yRotation) : null;
+    bar.querySelectorAll('button[data-view]').forEach(b =>
+      b.classList.toggle('active', b.dataset.view === active));
+    bar.querySelectorAll('button[data-projection]').forEach(b =>
+      b.classList.toggle('active', (b.dataset.projection === 'orthographic') === ortho));
+  }
+
+  document.getElementById('view-toolbar')?.addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn || !currentCamera) return;
+    if (btn.dataset.projection) {
+      currentCamera.ortho = btn.dataset.projection === 'orthographic';
+      currentCamera.redraw();
+    } else if (btn.dataset.view && VIEW_PRESETS[btn.dataset.view]) {
+      const p = VIEW_PRESETS[btn.dataset.view];
+      currentCamera.ortho = true;
+      currentCamera.animateTo(p.x, p.y);
+    }
+    updateViewToolbar();
+    // Drop focus so Space/Shift (camera up/down) don't re-trigger the button.
+    btn.blur();
+  });
 
   document.getElementById('clear-button').addEventListener('click', () => {
     currentCamera?.destroy();

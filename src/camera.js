@@ -14,12 +14,23 @@ export class InteractiveCanvas {
     this.isAnimating = false;
     this.animationFrameId = null;
     this.lastViewMatrix = null;
+
+    // Orthographic mode. deepslate always uploads a perspective projection,
+    // so main.js overrides it with getOrthoProjection() when `ortho` is true.
+    // Zoom (viewDist) maps to the ortho frustum size so switching between
+    // modes keeps the same framing at the orbit center.
+    this.ortho = false;
+    this.fovY = 70 * Math.PI / 180;
+    this.depthRadius = 0;        // structure bounding-sphere radius (set by main.js)
+    this.onViewChange = null;    // called when the user changes the view by hand
+    this._viewAnimId = null;
     
     let dragPos = null;
     let dragDistance = 0;
 
     this._onMouseDown = e => {
       if (e.button === 0) {
+        this._cancelViewAnimation();
         dragPos = [e.clientX, e.clientY];
         dragDistance = 0;
       }
@@ -33,6 +44,7 @@ export class InteractiveCanvas {
         this.yRotation += dx / 100;
         this.xRotation += dy / 100;
         dragPos = [e.clientX, e.clientY];
+        if (this.onViewChange) this.onViewChange();
         this.redraw();
       }
     };
@@ -81,6 +93,7 @@ export class InteractiveCanvas {
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
+    this._cancelViewAnimation();
     this.onRender = () => { };
   }
 
@@ -109,6 +122,44 @@ export class InteractiveCanvas {
 
     this.render();
     this.animationFrameId = requestAnimationFrame(() => this.animate());
+  }
+
+  // Orthographic projection whose visible height at the orbit center matches
+  // what the 70-degree perspective would show at the same viewDist.
+  getOrthoProjection(aspect) {
+    const halfH = this.viewDist * Math.tan(this.fovY / 2);
+    const halfW = halfH * aspect;
+    const far = this.viewDist + Math.max(500, this.depthRadius * 4);
+    return mat4.ortho(mat4.create(), -halfW, halfW, -halfH, halfH, 0.1, far);
+  }
+
+  _cancelViewAnimation() {
+    if (this._viewAnimId) {
+      cancelAnimationFrame(this._viewAnimId);
+      this._viewAnimId = null;
+    }
+  }
+
+  // Smoothly rotates to the given pitch/yaw (radians), taking the shortest
+  // way around for yaw.
+  animateTo(xRot, yRot, duration = 280) {
+    this._cancelViewAnimation();
+    const TAU = Math.PI * 2;
+    const sx = this.xRotation, sy = this.yRotation;
+    const dx = xRot - sx;
+    let dy = (yRot - sy) % TAU;
+    if (dy > Math.PI) dy -= TAU;
+    if (dy < -Math.PI) dy += TAU;
+    const t0 = performance.now();
+    const step = now => {
+      const t = Math.min(1, (now - t0) / duration);
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      this.xRotation = sx + dx * e;
+      this.yRotation = sy + dy * e;
+      this.render();
+      this._viewAnimId = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    this._viewAnimId = requestAnimationFrame(step);
   }
 
   redraw() {

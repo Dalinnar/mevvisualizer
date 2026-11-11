@@ -750,3 +750,52 @@
   color: var(--text-secondary, #888);
   text-align: center;
 }
+
+      /* ================= VIEW TOOLBAR (orthographic presets) ================= */
+      .view-toolbar {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        z-index: 6;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+        max-width: calc(100% - 32px);
+      }
+      .view-toolbar-group {
+        display: flex;
+        gap: 2px;
+        padding: 3px;
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+      }
+      .view-toolbar button {
+        width: auto;
+        margin: 0;
+        padding: 5px 10px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.2;
+        background: transparent;
+        color: var(--text-secondary);
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        transition: all var(--transition);
+      }
+      .view-toolbar button:hover {
+        color: var(--accent);
+        background: var(--accent-subtle);
+      }
+      .view-toolbar button.active {
+        color: var(--accent);
+        background: var(--accent-subtle);
+        border-color: var(--accent);
+      }
+      /* Embedded / headless mode shows only the 3D view. */
+      .no-controls .view-toolbar {
+        display: none;
+      }
