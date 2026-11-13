@@ -20,97 +20,132 @@
           <img src="https://cdn.minemev.com/static/base_images/favicon.ico" alt="">
           Controls
         </h1>
+
+        <!-- ── File ── -->
         <div class="file-input-section" id="file-drop-area">
           <p>📂 Drag & Drop Litematic here or click to browse</p>
           <input id="file-input" type="file" accept=".litematic">
         </div>
-        <div class="button-group">
-          <button id="clear-button">🗑️ Clear</button>
-          <button id="download-materials">📥 Download Materials CSV</button>
-          <button id="download-litematic">📦 Download Litematic</button>
+        <div class="button-group file-actions">
+          <button id="download-litematic" class="btn-primary">📦 Download Litematic</button>
+          <div class="button-row">
+            <button id="download-materials">🧱 Materials</button>
+            <button id="clear-button">🗑️ Clear</button>
+          </div>
         </div>
-        <div style="margin-top:10px;" class="grid-controls">
-          <label>
+
+        <!-- ── View ── -->
+        <div class="panel-section">
+          <div class="section-title">View</div>
+          <label class="check-row">
             <input type="checkbox" id="toggle-grid" checked>
-            Show Grid
+            Show grid
           </label>
-        </div>
-        <div style="margin-top:10px;" class="grid-controls">
-          <label>
+          <label class="check-row">
             <input type="checkbox" id="toggle-region-boxes" checked>
-            Show Region Boxes
+            Show region boxes
           </label>
+          <div id="version-controls" style="display:none;">
+            <label for="version-override">NBT version</label>
+            <input id="version-override" type="number" min="1" max="99">
+          </div>
         </div>
-        <div id="region-edit-controls" style="display:none; margin-top:10px; border-top:1px solid var(--border-color, #444); padding-top:10px;">
-          <p style="margin:4px 0; font-size:12px; color: var(--text-secondary);">
-            Click a region to select it, then use the arrow keys to move it (X/Z),
-            H/Y to move it up/down (Y), or Delete to remove it. These edits only
-            affect what's on screen until you save them.
-          </p>
+
+        <!-- ── Regions ── -->
+        <div class="panel-section" id="region-edit-controls" style="display:none;">
+          <div class="section-title">Regions</div>
+          <p class="hint">Click a region in the 3D view to select it, then:</p>
+          <div class="key-legend">
+            <span><span class="hud-key">◄►▲▼</span> move X / Z</span>
+            <span><span class="hud-key">H</span> <span class="hud-key">Y</span> up / down</span>
+            <span><span class="hud-key">C</span> clone</span>
+            <span><span class="hud-key">Del</span> delete</span>
+          </div>
           <div class="button-group">
-            <button id="save-region-edits" disabled>💾 Save Region Edits</button>
+            <button id="save-region-edits" disabled>💾 Save region edits</button>
           </div>
-          <div id="region-edit-status" style="margin-top:6px; font-size:12px; color: var(--text-secondary);"></div>
+          <div id="region-edit-status" class="status-line"></div>
         </div>
 
-        <div id="version-controls" style="display:none; margin-top:10px;">
-          <label>NBT Version:</label>
-          <input id="version-override" type="number" min="1" max="99"
-            style="width:60px; margin-left:8px;">
+        <!-- ── Stacking ── -->
+        <div class="panel-section" id="stacking-section" style="display:none;">
+          <div class="section-title">Stacking</div>
+
+          <div class="segmented" id="stacking-mode-section" style="display:none;">
+            <label class="seg">
+              <input type="radio" name="stacking-mode" id="mode-automatic" value="automatic" checked>
+              <span>⚙️ Automatic</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="stacking-mode" id="mode-manual" value="manual">
+              <span>✋ Manual</span>
+            </label>
+          </div>
+          <p class="hint" id="stack-mode-hint"></p>
+
+          <div id="stack-controls" style="display:none;">
+            <div class="field-row">
+              <div class="field-label">
+                <span id="repeats-label">Repeats</span>
+                <small id="repeats-help">Times the middle is repeated</small>
+              </div>
+              <div class="stepper">
+                <button type="button" data-step-target="stack-count" data-delta="-1" title="One less">−</button>
+                <input id="stack-count" type="number" min="1" value="1">
+                <button type="button" data-step-target="stack-count" data-delta="1" title="One more">+</button>
+              </div>
+            </div>
+            <div class="field-row" id="gap-controls">
+              <div class="field-label">
+                <span>Gap</span>
+                <small>Blocks between clusters</small>
+              </div>
+              <div class="stepper">
+                <button type="button" data-step-target="cluster-gap" data-delta="-1" title="One less">−</button>
+                <input id="cluster-gap" type="number" min="0" value="0">
+                <button type="button" data-step-target="cluster-gap" data-delta="1" title="One more">+</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="manual-stack-controls" style="display:none;">
+            <div class="manual-selected empty" id="manual-selected">
+              <span class="manual-selected-label">Selected</span>
+              <b id="manual-selected-name">click a region in the 3D view</b>
+            </div>
+
+            <div class="pair-builder">
+              <div class="pair-slot" id="slot-step">
+                <span class="slot-tag step">STEP</span>
+                <span class="slot-name" id="manual-step-label">not set</span>
+                <button type="button" class="icon-btn" id="manual-clear-step" title="Clear Step" style="visibility:hidden;">✕</button>
+                <button type="button" class="slot-set" id="manual-set-step" disabled>Use selected</button>
+              </div>
+              <div class="pair-slot" id="slot-cap">
+                <span class="slot-tag cap">CAP</span>
+                <span class="slot-name" id="manual-cap-label">not set</span>
+                <button type="button" class="icon-btn" id="manual-clear-cap" title="Clear Cap" style="visibility:hidden;">✕</button>
+                <button type="button" class="slot-set" id="manual-set-cap" disabled>Use selected</button>
+              </div>
+              <div id="manual-pair-check" class="pair-check" style="display:none;"></div>
+              <button id="manual-save-config" class="btn-primary" disabled>＋ Add pair</button>
+            </div>
+
+            <div id="manual-config-list"></div>
+
+            <div class="button-group">
+              <button id="manual-copy-link" disabled>🔗 Copy shareable link</button>
+              <button id="manual-clear-configs">🗑️ Clear all pairs</button>
+            </div>
+            <div id="manual-status" class="status-line"></div>
+          </div>
         </div>
-        <div id="stack-controls" style="display:none; margin-top:10px;">
-          <label>Stack Count:</label>
-          <input id="stack-count" type="number" min="1" value="1"
-            style="width:60px;">
-          <div id="gap-controls" style="display:inline;">
-            <label style="margin-left:12px;">Cluster Gap:</label>
-            <input id="cluster-gap" type="number" min="0" value="0"
-              style="width:60px;">
-            <span
-              style="font-size:12px; color: var(--text-secondary);">blocks</span>
-          </div>
-          <div id="enclosing-size-display" class="enclosing-size"></div>
-        </div>
 
-        <div class="stacking-mode-section" id="stacking-mode-section" style="display:none; margin-top:14px; border-top:1px solid var(--border-color, #444); padding-top:10px;">
-          <label style="margin-right:12px;">
-            <input type="radio" name="stacking-mode" id="mode-automatic" value="automatic" checked>
-            Automatic Stacking
-          </label>
-          <label>
-            <input type="radio" name="stacking-mode" id="mode-manual" value="manual">
-            Manual Stacking
-          </label>
-        </div>
-
-        <div id="manual-stack-controls" style="display:none; margin-top:10px;">
-          <p style="margin:4px 0; font-size:13px; color: var(--text-secondary);">
-            Click a region in the 3D view to select it, assign it as Step or Cap, then
-            save the pair. Repeat for as many Step/Cap pairs as you need. Each pair's
-            repeat count is computed automatically from the LCM of step widths sharing
-            an axis, so differently-sized Steps stay evenly spaced. The shared Stack
-            Count field above acts as a cycle multiplier on top of that.
-          </p>
-          <div class="button-group">
-            <button id="manual-set-step">Set Selected as Step</button>
-            <button id="manual-set-cap">Set Selected as Cap</button>
-          </div>
-          <div style="margin-top:8px; font-size:13px;">
-            Step: <span id="manual-step-label">(none selected)</span><br>
-            Cap: <span id="manual-cap-label">(none selected)</span>
-          </div>
-          <div class="button-group" style="margin-top:8px;">
-            <button id="manual-save-config" disabled>💾 Save Pair</button>
-          </div>
-
-          <div id="manual-config-list" style="margin-top:12px;"></div>
-
-          <div class="button-group" style="margin-top:10px;">
-            <button id="manual-apply-button" disabled>▶️ Apply All</button>
-            <button id="manual-copy-link" disabled>🔗 Copy Shareable Link</button>
-            <button id="manual-clear-configs">🗑️ Clear Saved Pairs</button>
-          </div>
-          <div id="manual-status" style="margin-top:6px; font-size:12px; color: var(--text-secondary);"></div>
+        <!-- ── Size ── -->
+        <div class="panel-section" id="size-section" style="display:none;">
+          <div class="section-title">Size <span class="unit">blocks</span></div>
+          <div id="enclosing-size-display" class="size-grid"></div>
+          <p class="hint">Highlighted axes can be changed: use − / + or type a size and press Enter.</p>
         </div>
 
       </div>
@@ -152,6 +187,10 @@
               <span class="hud-key">C</span> clone
               <span class="hud-sep">·</span>
               <span class="hud-key">Del</span> delete
+            </div>
+            <div id="hud-manual-actions" class="hud-actions hidden">
+              <button type="button" id="hud-set-step" class="hud-btn step" disabled>Set as Step</button>
+              <button type="button" id="hud-set-cap" class="hud-btn cap" disabled>Set as Cap</button>
             </div>
           </div>
 

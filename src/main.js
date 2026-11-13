@@ -2,11 +2,24 @@ import { InteractiveCanvas } from './camera.js';
 import { create3DBlocks } from './region.js';
 import { loadBlockData, ResourceLoader } from './resources.js';
 import { StructureBuilder } from './structure.js';
+import { openMaterialsDialog, loadItemCatalog } from './materials.js';
 import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
-import { validateStackingStructure, stackMiddle, computeEnclosingSizeAtStack, localToWorld, nbtNum, cloneRegionWithPosition } from './validate.js';
-import { manualStackMulti, resolveManualCycleCounts, encodeManualConfig, decodeManualConfig } from './manualStack.js';
+import { validateStackingStructure, stackMiddle, localToWorld, nbtNum, cloneRegionWithPosition } from './validate.js';
+import { manualStackMulti, resolveManualCycleCounts, detectManualStackAxis, encodeManualConfig, decodeManualConfig } from './manualStack.js';
+
+// Region names come from the uploaded file, so escape them before they go
+// anywhere near innerHTML.
+function esc(str) {
+  return String(str).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Fill colors for the Step / Cap highlights in the 3D view (also used by the
+// STEP / CAP tags in the panel, see style.css).
+const STEP_COLOR = [0.25, 0.6, 1];
+const CAP_COLOR = [1, 0.6, 0.2];
 
 // Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
 const REGION_BOX_COLORS = [
@@ -246,7 +259,9 @@ async function init() {
   let currentStructure = null, currentRenderer = null, currentCamera = null,
     currentBuilder = null, slider = null, originalBuffer = null, originalNbt = null, lastStackedNbt = null,
     currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [],
-    selectedRegionName = null, selectionMesh = null,
+    selectedRegionName = null, selectionMesh = null, markerMeshes = [],
+    // Axes the size card lets the user edit (see updateEnclosingSizeDisplay).
+    sizeEditable = [],
     manualMode = false, manualCurrentStep = null, manualCurrentCap = null,
     manualConfigs = [], currentExtLink = null, lastAutoValidation = null,
     // The root NBT compound backing whatever is currently on screen (post
@@ -264,8 +279,12 @@ async function init() {
     // without querying the DOM every keystroke.
     cloneGuiOpen = false;
 
+  // Shows/hides every panel section that only makes sense once a litematic
+  // is loaded (region editing, stacking, size).
   function showRegionEditControls(show) {
-    document.getElementById('region-edit-controls').style.display = show ? 'block' : 'none';
+    for (const id of ['region-edit-controls', 'stacking-section', 'size-section']) {
+      document.getElementById(id).style.display = show ? 'block' : 'none';
+    }
   }
 
   function updateSaveEditsButton() {
@@ -273,7 +292,7 @@ async function init() {
     const status = document.getElementById('region-edit-status');
     btn.disabled = !hasUnsavedRegionEdits;
     status.textContent = hasUnsavedRegionEdits
-      ? 'Unsaved moves/deletes — stacking will ignore them until saved.'
+      ? 'Unsaved edits — stacking ignores them until you save.'
       : '';
   }
 
@@ -291,6 +310,7 @@ async function init() {
 
     if (!regionName || !currentBuilder) {
       selectionMesh = null;
+      updateManualStatus();
       currentCamera?.redraw();
       return;
     }
@@ -300,6 +320,7 @@ async function init() {
     const { min, max } = currentBuilder.getRegionBoundsLocal()[regionName];
     const boxMax = [max[0] + 1, max[1] + 1, max[2] + 1];
     selectionMesh = buildBoxFillMesh(gl, min, boxMax, [0.55, 0.55, 0.55]);
+    updateManualStatus();
     currentCamera?.redraw();
   }
 
@@ -308,6 +329,8 @@ async function init() {
   // informational — doesn't itself bind any keys.
   function updateSelectionHud(regionName) {
     const hud = document.getElementById('selection-hud');
+    // Quick Step/Cap buttons, only relevant while building manual pairs.
+    document.getElementById('hud-manual-actions').classList.toggle('hidden', !manualMode);
     if (!regionName) {
       hud.classList.add('hidden');
       return;
@@ -367,6 +390,7 @@ async function init() {
     const stillSelected = selectedRegionName && regions.has(selectedRegionName) ? selectedRegionName : null;
 
     const { w, h, d } = getEnclosing(currentActiveRoot);
+    updateEnclosingSizeDisplay(w, h, d, sizeEditable); // edits can change the size
     const builder = new StructureBuilder(w, h, d);
     await buildAndRender(builder, regions, w, h, d);
 
@@ -560,48 +584,138 @@ async function init() {
     return visible;
   }
 
-  // Renders "Size: n x n x n" with the axis that grows via stacking (strideAxis)
-  // as an editable <input>, and — when the structure has more than one cluster,
-  // so the "Cluster Gap" control actually does something — the parallel axis
-  // (the free axis gap scales) as an editable <input> too. The remaining axis
-  // (height, unaffected by either control) stays a plain, disabled number.
-  function updateEnclosingSizeDisplay(w, h, d, strideAxis, clusterCount) {
+  // ── Size probing ───────────────────────────────────────────────────────────
+  // Stacking grows the structure linearly, so to turn a wanted size back into
+  // a repeat count / gap we measure the size at two settings and interpolate.
+  // Results are cached per loaded file (originalBuffer never changes until a
+  // new file is loaded or edits are saved, which swaps the buffer).
+  const probeCache = new WeakMap();
+  const readEnclosing = root => {
+    const enc = root.get("Metadata").get("EnclosingSize");
+    const n = k => Math.abs(Number(enc.get(k).value ?? enc.get(k)));
+    return { x: n('x'), y: n('y'), z: n('z') };
+  };
+  function memoProbe(key, compute) {
+    let cache = probeCache.get(originalBuffer);
+    if (!cache) { cache = new Map(); probeCache.set(originalBuffer, cache); }
+    if (!cache.has(key)) cache.set(key, compute());
+    return cache.get(key);
+  }
+  const parseOriginal = () => deepslate.NbtFile.read(new Uint8Array(originalBuffer));
+
+  function probeAutoSize(stackSize, gap) {
+    return memoProbe(`a|${stackSize}|${gap}`, () => {
+      const stacked = stackMiddle(parseOriginal(), stackSize, gap);
+      return readEnclosing(stacked.root ?? stacked);
+    });
+  }
+
+  function probeManualSize(cycles) {
+    // Pairs are part of the key: the same file gives different sizes when
+    // the saved pairs change.
+    const key = `m|${cycles}|${manualConfigs.map(c => c.stepName + '>' + c.capName).join(',')}`;
+    return memoProbe(key, () => {
+      const nbt = parseOriginal();
+      const resolved = resolveManualCycleCounts(nbt, manualConfigs, cycles);
+      return readEnclosing(manualStackMulti(nbt, resolved).nbt.root);
+    });
+  }
+
+  // Describes which size axes are editable in the current mode, so the size
+  // card can render them as steppers with a short "what this does" note.
+  //   auto:   stride axis → changes Repeats, parallel axis → changes Gap
+  //   manual: every axis a saved pair stacks along → changes Cycles
+  function describeEditableAxes({ mode, strideAxis, clusterCount, axes }) {
+    try {
+      if (mode === 'auto' && strideAxis) {
+        const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value, 10) || 0);
+        const per = probeAutoSize(2, gap)[strideAxis] - probeAutoSize(1, gap)[strideAxis];
+        const out = [{ axis: strideAxis, role: 'stride', note: per > 0 ? `+${per} per repeat` : 'repeats' }];
+        if (clusterCount > 1) {
+          const parallel = strideAxis === 'x' ? 'z' : 'x';
+          const stack = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+          const perGap = probeAutoSize(stack, 1)[parallel] - probeAutoSize(stack, 0)[parallel];
+          out.push({ axis: parallel, role: 'parallel', note: perGap > 0 ? `+${perGap} per gap` : 'gap' });
+        }
+        return out;
+      }
+      if (mode === 'manual' && axes?.length) {
+        const s1 = probeManualSize(1), s2 = probeManualSize(2);
+        return axes.map(axis => {
+          const per = s2[axis] - s1[axis];
+          return { axis, role: 'cycle', note: per > 0 ? `+${per} per cycle` : 'cycles' };
+        });
+      }
+    } catch (err) {
+      console.error('Failed to describe editable axes:', err);
+    }
+    return [];
+  }
+
+  // Renders the size card: one cell per axis (X / Y / Z). Axes that stacking
+  // can change get −/+ buttons and an editable field with a note saying what
+  // moving them does; the rest are read-only. Typing a size and pressing
+  // Enter (or leaving the field) finds the repeat count / gap that gets
+  // closest to it.
+  function updateEnclosingSizeDisplay(w, h, d, editable = []) {
+    sizeEditable = editable;
     const container = document.getElementById('enclosing-size-display');
     const dims = { x: w, y: h, z: d };
-    const order = ['x', 'y', 'z'];
+    const byAxis = Object.fromEntries(editable.map(e => [e.axis, e]));
 
-    const parallelAxis = strideAxis ? (strideAxis === 'x' ? 'z' : 'x') : null;
-    const gapEditable = parallelAxis && clusterCount > 1;
+    container.innerHTML = ['x', 'y', 'z'].map(axis => {
+      const e = byAxis[axis];
+      const tag = `<span class="size-axis-tag axis-${axis}">${axis.toUpperCase()}</span>`;
+      if (!e) {
+        return `<div class="size-cell">${tag}<input type="number" class="size-axis-input" value="${dims[axis]}" disabled></div>`;
+      }
+      return `<div class="size-cell editable">${tag}
+        <div class="size-field">
+          <button type="button" class="size-step" data-axis="${axis}" data-delta="-1" title="One less">−</button>
+          <input type="number" min="1" step="1" class="size-axis-input size-axis-editable" data-axis="${axis}" value="${dims[axis]}">
+          <button type="button" class="size-step" data-axis="${axis}" data-delta="1" title="One more">+</button>
+        </div>
+        <span class="size-note">${esc(e.note)}</span></div>`;
+    }).join('');
 
-    container.innerHTML = 'Size: ' + order.map(axis => {
-      const isStride = axis === strideAxis;
-      const isParallel = gapEditable && axis === parallelAxis;
-      const editable = isStride || isParallel;
-      const role = isStride ? 'stride' : (isParallel ? 'parallel' : '');
-      const cls = editable ? 'size-axis-input size-axis-editable' : 'size-axis-input';
-      return `<input type="number" min="1" step="1" class="${cls}" data-axis="${axis}" data-role="${role}" value="${dims[axis]}" ${editable ? '' : 'disabled'}>`;
-    }).join(' x ');
+    const roleFor = axis => byAxis[axis]?.role;
 
-    const bind = (axis, role) => {
-      const input = container.querySelector(`input[data-axis="${axis}"]`);
-      if (!input) return;
+    // −/+ move the underlying control by exactly one unit.
+    container.querySelectorAll('.size-step').forEach(btn => btn.addEventListener('click', () => {
+      const role = roleFor(btn.dataset.axis);
+      const target = { stride: 'stack-count', cycle: 'stack-count', parallel: 'cluster-gap' }[role];
+      stepNumberInput(document.getElementById(target), parseInt(btn.dataset.delta, 10));
+    }));
+
+    container.querySelectorAll('input.size-axis-editable').forEach(input => {
+      const axis = input.dataset.axis;
       let committing = false;
-
       const commit = async () => {
         if (committing) return;
         committing = true;
         const target = Math.max(1, parseInt(input.value, 10) || 1);
-        if (role === 'stride') await applyTargetStrideSize(target, axis);
-        else await applyTargetParallelSize(target, axis);
+        if (target !== dims[axis]) {
+          const role = roleFor(axis);
+          if (role === 'stride') await applyTargetStrideSize(target, axis);
+          else if (role === 'parallel') await applyTargetParallelSize(target, axis);
+          else await applyTargetCycleSize(target, axis);
+        }
         committing = false;
       };
-
       input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
       input.addEventListener('blur', commit);
-    };
+    });
+  }
 
-    if (strideAxis) bind(strideAxis, 'stride');
-    if (gapEditable) bind(parallelAxis, 'parallel');
+  // Bumps a number input by `delta` (respecting its min) and fires the same
+  // 'change' event a typed edit would, so all existing listeners run.
+  function stepNumberInput(input, delta) {
+    if (!input) return;
+    const min = input.min !== '' ? Number(input.min) : -Infinity;
+    const next = Math.max(min, (parseInt(input.value, 10) || 0) + delta);
+    if (String(next) === input.value) return;
+    input.value = next;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   // Given a desired total size along the growing axis, figures out the stack
@@ -613,8 +727,8 @@ async function init() {
 
     let size1, size2;
     try {
-      size1 = computeEnclosingSizeAtStack(originalBuffer, 1, gap)[strideAxis];
-      size2 = computeEnclosingSizeAtStack(originalBuffer, 2, gap)[strideAxis];
+      size1 = probeAutoSize(1, gap)[strideAxis];
+      size2 = probeAutoSize(2, gap)[strideAxis];
     } catch (err) {
       console.error('Failed to probe size for target stride:', err);
       return;
@@ -639,8 +753,8 @@ async function init() {
 
     let size1, size2;
     try {
-      size1 = computeEnclosingSizeAtStack(originalBuffer, stackSize, 0)[parallelAxis];
-      size2 = computeEnclosingSizeAtStack(originalBuffer, stackSize, 1)[parallelAxis];
+      size1 = probeAutoSize(stackSize, 0)[parallelAxis];
+      size2 = probeAutoSize(stackSize, 1)[parallelAxis];
     } catch (err) {
       console.error('Failed to probe size for target parallel axis:', err);
       return;
@@ -656,6 +770,30 @@ async function init() {
     await rerender();
   }
 
+  // Manual-mode equivalent: finds the cycle count (the shared Stack Count
+  // field) whose resulting size along `axis` is closest to the target.
+  async function applyTargetCycleSize(targetSize, axis) {
+    if (!originalBuffer || !manualConfigs.length) return;
+
+    let size1, size2;
+    try {
+      size1 = probeManualSize(1)[axis];
+      size2 = probeManualSize(2)[axis];
+    } catch (err) {
+      console.error('Failed to probe size for target cycles:', err);
+      return;
+    }
+
+    const perCycle = size2 - size1;
+    const needed = perCycle > 0
+      ? Math.max(1, Math.round(1 + (targetSize - size1) / perCycle))
+      : 1;
+
+    document.getElementById('stack-count').value = needed;
+    renderManualConfigList();
+    await applyManualStack();
+  }
+
   function rebuildWithYRange(minY, maxY) {
     if (!currentBuilder) return;
     currentStructure = currentBuilder.buildStructure(minY, maxY);
@@ -667,12 +805,36 @@ async function init() {
 
   // ── Manual Stacking ─────────────────────────────────────────────────────────
 
-  // Toggles between the automatic and manual stacking UI. The Stack Count
-  // input (inside #stack-controls) is shared by both modes; only the
+  // One-line explanation under the Stacking title, so it's always clear what
+  // the current mode does (or why automatic stacking isn't available).
+  function updateStackHint() {
+    const el = document.getElementById('stack-mode-hint');
+    if (!el) return;
+    if (manualMode) {
+      el.textContent = 'You choose what repeats. Pick a Step (the piece that gets repeated) and a Cap (the end piece touching it).';
+    } else if (lastAutoValidation?.isValid) {
+      el.textContent = 'The middle region(s) between the start and end are repeated automatically.';
+    } else if (lastAutoValidation) {
+      const why = lastAutoValidation.errors?.[0];
+      el.textContent = `Automatic stacking isn't available for this file${why ? ` (${why})` : ''}.` +
+        ' Use Manual stacking to build it yourself.';
+    } else {
+      el.textContent = '';
+    }
+  }
+
+  // Toggles between the automatic and manual stacking UI. The Repeats input
+  // (#stack-count, inside #stack-controls) is shared by both modes; only the
   // automatic-only Cluster Gap control is hidden while in manual mode.
-  function setManualMode(enabled) {
+  // `userInitiated` is true when the person flipped the Automatic/Manual
+  // switch, in which case the 3D view is also re-rendered to match.
+  function setManualMode(enabled, userInitiated = false) {
     manualMode = enabled;
     document.getElementById('manual-stack-controls').style.display = enabled ? 'block' : 'none';
+    document.getElementById('repeats-label').textContent = enabled ? 'Cycles' : 'Repeats';
+    document.getElementById('repeats-help').textContent = enabled
+      ? 'Repeats the whole Step/Cap pattern'
+      : 'Times the middle is repeated';
 
     // Entering manual mode with no saved pairs yet: the 3D view may still be
     // showing an automatically-stacked render (e.g. "middle_0", "middle_1"
@@ -701,14 +863,86 @@ async function init() {
       document.getElementById('gap-controls').style.display = 'none';
     }
 
+    // Leaving manual mode by hand: show the automatic result (or the plain
+    // original) instead of leaving the manual one on screen.
+    if (!enabled && userInitiated && originalBuffer) {
+      if (lastAutoValidation?.isValid) rerender();
+      else renderStructure(parseOriginal());
+    }
+
+    updateStackHint();
+    updateSelectionHud(selectedRegionName);
     updateManualStatus();
   }
 
-  // Renders the list of saved Step/Cap pairs. Each pair's stack count is no
-  // longer set manually — it's auto-computed from the LCM of step widths
-  // sharing an axis (see resolveManualCycleCounts), scaled by the shared
-  // Stack Count field acting as a cycle multiplier. This keeps Caps from
-  // differently-sized Step regions evenly spaced instead of drifting apart.
+  // World-space info for every region of the *original* file (what manual
+  // stacking actually operates on), memoized per loaded file.
+  function getOriginalRegionWorlds() {
+    return memoProbe('regionWorlds', () => {
+      const regions = parseOriginal().root.get('Regions');
+      const out = {};
+      for (const name of regions.keys()) {
+        const e = regions.get(name);
+        out[name] = localToWorld(readRegionVec(e, 'Position'), readRegionVec(e, 'Size'));
+      }
+      return out;
+    });
+  }
+
+  // Live feedback for the pair being built: is this Step/Cap combination
+  // something manualStackMulti can actually stack? Returns null while the
+  // pair is incomplete, otherwise { kind: 'ok' | 'warn' | 'error', msg }.
+  function checkPair(step, cap) {
+    if (!step || !cap || !originalBuffer) return null;
+    if (step === cap) return { kind: 'error', msg: 'Step and Cap must be two different regions.' };
+
+    let worlds;
+    try { worlds = getOriginalRegionWorlds(); } catch { return null; }
+
+    for (const name of [step, cap]) {
+      if (!worlds[name]) {
+        return { kind: 'error', msg: `"${name}" is a generated copy, not an original region. Pick an original one.` };
+      }
+    }
+
+    const det = detectManualStackAxis(worlds[step], worlds[cap]);
+    if (!det) {
+      return { kind: 'error', msg: "These regions don't touch. Step and Cap must be side by side along one axis and line up on the other two." };
+    }
+    if (manualConfigs.some(c => c.stepName === step && c.capName === cap)) {
+      return { kind: 'error', msg: 'This pair is already saved.' };
+    }
+
+    const used = new Set(manualConfigs.flatMap(c => [c.stepName, c.capName]));
+    const reused = [step, cap].find(n => used.has(n));
+    if (reused) {
+      return { kind: 'warn', msg: `"${reused}" is already part of another pair. This usually gives odd results.` };
+    }
+
+    const sign = det.direction > 0 ? '+' : '−';
+    return { kind: 'ok', msg: `Touching along ${sign}${det.axis.toUpperCase()} · Step is ${worlds[step].size[det.axis]} blocks long` };
+  }
+
+  // Paints the pending Step (blue) and Cap (orange) in the 3D view so it's
+  // obvious which regions are picked, without needing to read the panel.
+  function rebuildMarkerMeshes() {
+    markerMeshes = [];
+    if (manualMode && currentBuilder) {
+      const bounds = currentBuilder.getRegionBoundsLocal();
+      for (const [name, color] of [[manualCurrentStep, STEP_COLOR], [manualCurrentCap, CAP_COLOR]]) {
+        const b = name && bounds[name];
+        if (!b) continue;
+        markerMeshes.push(buildBoxFillMesh(gl, b.min, [b.max[0] + 1, b.max[1] + 1, b.max[2] + 1], color));
+      }
+    }
+    currentCamera?.redraw();
+  }
+
+  // Renders the list of saved Step/Cap pairs. Each pair's repeat count is
+  // auto-computed from the LCM of step widths sharing an axis (see
+  // resolveManualCycleCounts), scaled by the shared Cycles field. This keeps
+  // Caps from differently-sized Step regions evenly spaced instead of
+  // drifting apart.
   function renderManualConfigList() {
     const container = document.getElementById('manual-config-list');
     container.innerHTML = '';
@@ -720,26 +954,35 @@ async function init() {
     if (originalBuffer) {
       try {
         const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-        const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
-        resolved = resolveManualCycleCounts(nbt, manualConfigs, cycles);
+        resolved = resolveManualCycleCounts(parseOriginal(), manualConfigs, cycles);
       } catch (err) {
         errorMsg = err.message;
       }
     }
 
+    const title = document.createElement('div');
+    title.className = 'pair-list-title';
+    title.textContent = `Saved pairs (${manualConfigs.length})`;
+    container.appendChild(title);
+
     manualConfigs.forEach((cfg, i) => {
       const info = resolved ? resolved[i] : null;
-      const countLabel = info
-        ? `×${info.stackCount} auto (stride ${info.stride}, ${info.direction > 0 ? '+' : '-'}${info.axis})`
+      const meta = info
+        ? `×${info.stackCount} copies · ${info.direction > 0 ? '+' : '−'}${info.axis.toUpperCase()} · ${info.stride} blocks each`
         : (errorMsg ? `⚠️ ${errorMsg}` : '…');
 
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:4px;';
-      row.innerHTML = `
-        <span style="flex:1;">${i + 1}. Step: <b>${cfg.stepName}</b> → Cap: <b>${cfg.capName}</b> — ${countLabel}</span>
-        <button data-index="${i}" class="manual-remove-config" title="Remove this pair">✕</button>
+      const card = document.createElement('div');
+      card.className = 'pair-card' + (info ? '' : ' pair-card-error');
+      card.innerHTML = `
+        <span class="pair-index">${i + 1}</span>
+        <div class="pair-body">
+          <div class="pair-line"><span class="slot-tag step">STEP</span><span class="pair-name">${esc(cfg.stepName)}</span></div>
+          <div class="pair-line"><span class="slot-tag cap">CAP</span><span class="pair-name">${esc(cfg.capName)}</span></div>
+          <div class="pair-meta">${esc(meta)}</div>
+        </div>
+        <button data-index="${i}" class="manual-remove-config icon-btn" title="Remove this pair">✕</button>
       `;
-      container.appendChild(row);
+      container.appendChild(card);
     });
 
     container.querySelectorAll('.manual-remove-config').forEach(btn => {
@@ -751,19 +994,50 @@ async function init() {
           await applyManualStack();
         } else {
           clearConfigFromUrl();
+          // Last pair removed: go back to the plain, unstacked structure.
+          if (originalBuffer) await renderStructure(parseOriginal());
         }
       });
     });
   }
 
-  // Refreshes the Step/Cap labels and enables/disables the Save/Apply/Copy
-  // buttons based on current selections and saved pairs.
+  // Refreshes everything in the manual panel that depends on the current
+  // selection / pending Step & Cap / saved pairs: the selected-region line,
+  // the Set buttons (panel and 3D HUD), the Step/Cap slots, the live pair
+  // check, the Save/Copy buttons, and the 3D highlights.
   function updateManualStatus() {
-    document.getElementById('manual-step-label').textContent = manualCurrentStep || '(none selected)';
-    document.getElementById('manual-cap-label').textContent = manualCurrentCap || '(none selected)';
-    document.getElementById('manual-save-config').disabled = !(manualCurrentStep && manualCurrentCap);
-    document.getElementById('manual-apply-button').disabled = !(manualConfigs.length && originalBuffer);
-    document.getElementById('manual-copy-link').disabled = !(manualConfigs.length && currentExtLink);
+    const sel = selectedRegionName;
+    document.getElementById('manual-selected-name').textContent = sel || 'click a region in the 3D view';
+    document.getElementById('manual-selected').classList.toggle('empty', !sel);
+    for (const id of ['manual-set-step', 'manual-set-cap', 'hud-set-step', 'hud-set-cap']) {
+      document.getElementById(id).disabled = !sel;
+    }
+
+    const slots = [
+      ['step', manualCurrentStep, 'not set'],
+      ['cap', manualCurrentCap, 'not set'],
+    ];
+    for (const [role, name, placeholder] of slots) {
+      document.getElementById(`manual-${role}-label`).textContent = name || placeholder;
+      document.getElementById(`slot-${role}`).classList.toggle('filled', !!name);
+      document.getElementById(`manual-clear-${role}`).style.visibility = name ? 'visible' : 'hidden';
+    }
+
+    const check = checkPair(manualCurrentStep, manualCurrentCap);
+    const checkEl = document.getElementById('manual-pair-check');
+    checkEl.className = 'pair-check' + (check ? ` ${check.kind}` : '');
+    checkEl.textContent = check ? ({ ok: '✓ ', warn: '⚠ ', error: '✗ ' }[check.kind] + check.msg) : '';
+    checkEl.style.display = check ? '' : 'none';
+
+    document.getElementById('manual-save-config').disabled = !check || check.kind === 'error';
+
+    const copyBtn = document.getElementById('manual-copy-link');
+    copyBtn.disabled = !(manualConfigs.length && currentExtLink);
+    copyBtn.title = currentExtLink
+      ? 'Copy a link that opens this litematic with these pairs applied'
+      : 'Only available for litematics opened through a ?ext_link= URL';
+
+    rebuildMarkerMeshes();
   }
 
   // Runs manualStackMulti() with either the given list of pairs (used when
@@ -799,9 +1073,11 @@ async function init() {
       return;
     }
 
-    document.getElementById('manual-status').textContent = result.results
-      .map(r => `${r.stepName}→${r.capName}: ${r.direction > 0 ? '+' : '-'}${r.axis} ×${r.count}`)
-      .join(' | ');
+    // Per-pair details (axis, copies, stride) are shown on each saved-pair
+    // card; this line is only for errors and edit warnings.
+    document.getElementById('manual-status').textContent = hasUnsavedRegionEdits
+      ? 'Heads up: stacking uses the layout from the last save, not your unsaved edits.'
+      : '';
 
     renderManualConfigList();
     syncConfigToUrl();
@@ -813,7 +1089,10 @@ async function init() {
     const root = result.nbt.root || result.nbt;
     currentActiveRoot = root;
     const { w, h, d } = getEnclosing(root);
-    updateEnclosingSizeDisplay(w, h, d, null, 0);
+    updateEnclosingSizeDisplay(w, h, d, describeEditableAxes({
+      mode: 'manual',
+      axes: [...new Set(resolvedConfigs.map(c => c.axis))],
+    }));
 
     const builder = new StructureBuilder(w, h, d);
     await buildAndRender(builder, root.get("Regions"), w, h, d);
@@ -992,6 +1271,14 @@ async function init() {
         renderer.prepareDraw(view);
         currentRegionMeshes.forEach(({ mesh }) => renderer.drawMesh(mesh, { pos: true, color: true }));
       }
+      if (markerMeshes.length) {
+        // Blue (Step) / orange (Cap) highlights for the pair being built.
+        renderer.setShader(selectionShaderProgram);
+        renderer.prepareDraw(view);
+        gl.disable(gl.CULL_FACE);
+        markerMeshes.forEach(m => renderer.drawMesh(m, { pos: true, color: true }));
+        gl.enable(gl.CULL_FACE);
+      }
       if (selectionMesh) {
         // Translucent gray fill over the selected region's faces. Cull face
         // is disabled for this draw so both sides of each box face render.
@@ -1019,6 +1306,7 @@ async function init() {
       bounds.maxX - bounds.minX, bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ);
     currentCamera.onViewChange = updateViewToolbar;
     updateViewToolbar();
+    updateManualStatus(); // also rebuilds the Step/Cap highlights for the new builder
 
     // Exposed so index.html's window-resize handler (and any external
     // driver, e.g. a headless screenshot script) can force a redraw after
@@ -1079,9 +1367,11 @@ async function init() {
     currentActiveRoot = root;
 
     const { w, h, d } = getEnclosing(root);
-    if (stackSize) {
-      updateEnclosingSizeDisplay(w, h, d, currentStrideAxis, currentClusterCount);
-    }
+    // Always show the size; only stacked renders have editable axes.
+    updateEnclosingSizeDisplay(w, h, d, stackSize
+      ? describeEditableAxes({ mode: 'auto', strideAxis: currentStrideAxis, clusterCount: currentClusterCount })
+      : []);
+    updateStackHint();
 
     const builder = new StructureBuilder(w, h, d);
     await buildAndRender(builder, root.get("Regions"), w, h, d);
@@ -1263,27 +1553,42 @@ async function init() {
   });
 
   document.getElementById('mode-automatic').addEventListener('change', e => {
-    if (e.target.checked) setManualMode(false);
+    if (e.target.checked) setManualMode(false, true);
   });
   document.getElementById('mode-manual').addEventListener('change', e => {
-    if (e.target.checked) setManualMode(true);
+    if (e.target.checked) setManualMode(true, true);
   });
 
-  document.getElementById('manual-set-step').addEventListener('click', () => {
-    if (!selectedRegionName) { alert('Click a region in the 3D view first.'); return; }
-    manualCurrentStep = selectedRegionName;
-    updateManualStatus();
-  });
-  document.getElementById('manual-set-cap').addEventListener('click', () => {
-    if (!selectedRegionName) { alert('Click a region in the 3D view first.'); return; }
-    manualCurrentCap = selectedRegionName;
-    updateManualStatus();
-  });
-  document.getElementById('manual-save-config').addEventListener('click', async () => {
-    if (!manualCurrentStep || !manualCurrentCap) {
-      alert('Select both a Step region and a Cap region first.');
-      return;
+  // −/+ buttons next to number inputs (Repeats, Gap): data-step-target names
+  // the input, data-delta the amount.
+  document.querySelectorAll('[data-step-target]').forEach(btn => btn.addEventListener('click', () => {
+    stepNumberInput(document.getElementById(btn.dataset.stepTarget), parseInt(btn.dataset.delta, 10));
+    btn.blur();
+  }));
+
+  // Step / Cap assignment: from the panel or the quick buttons in the 3D HUD.
+  function assignSelected(role) {
+    if (!selectedRegionName) return;
+    if (role === 'step') {
+      manualCurrentStep = selectedRegionName;
+      // Picking the same region for both slots can't be what was meant.
+      if (manualCurrentCap === selectedRegionName) manualCurrentCap = null;
+    } else {
+      manualCurrentCap = selectedRegionName;
+      if (manualCurrentStep === selectedRegionName) manualCurrentStep = null;
     }
+    updateManualStatus();
+  }
+  for (const [id, role] of [['manual-set-step', 'step'], ['hud-set-step', 'step'],
+                            ['manual-set-cap', 'cap'], ['hud-set-cap', 'cap']]) {
+    document.getElementById(id).addEventListener('click', e => { assignSelected(role); e.currentTarget.blur(); });
+  }
+  document.getElementById('manual-clear-step').addEventListener('click', () => { manualCurrentStep = null; updateManualStatus(); });
+  document.getElementById('manual-clear-cap').addEventListener('click', () => { manualCurrentCap = null; updateManualStatus(); });
+
+  document.getElementById('manual-save-config').addEventListener('click', async () => {
+    const check = checkPair(manualCurrentStep, manualCurrentCap);
+    if (!check || check.kind === 'error') return;
     manualConfigs.push({ stepName: manualCurrentStep, capName: manualCurrentCap });
     manualCurrentStep = null;
     manualCurrentCap = null;
@@ -1291,15 +1596,17 @@ async function init() {
     updateManualStatus();
     if (originalBuffer) await applyManualStack();
   });
-  document.getElementById('manual-clear-configs').addEventListener('click', () => {
+  document.getElementById('manual-clear-configs').addEventListener('click', async () => {
     manualConfigs = [];
     manualCurrentStep = null;
     manualCurrentCap = null;
+    document.getElementById('manual-status').textContent = '';
     renderManualConfigList();
     updateManualStatus();
     clearConfigFromUrl();
+    // Back to the plain structure (the stacked view no longer has any pairs).
+    if (originalBuffer) await renderStructure(parseOriginal());
   });
-  document.getElementById('manual-apply-button').addEventListener('click', () => applyManualStack());
   document.getElementById('manual-copy-link').addEventListener('click', () => copyManualShareLink());
   document.getElementById('save-region-edits').addEventListener('click', () => saveRegionEditsAsOriginal());
 
@@ -1356,6 +1663,8 @@ async function init() {
     currentRegionMeshes = [];
     selectedRegionName = null;
     selectionMesh = null;
+    markerMeshes = [];
+    sizeEditable = [];
     updateSelectionHud(null);
     manualCurrentStep = null;
     manualCurrentCap = null;
@@ -1386,11 +1695,21 @@ async function init() {
 
   document.getElementById('download-materials').addEventListener('click', () => {
     if (!currentBuilder) return alert("No structure loaded!");
-    const blob = new Blob([currentBuilder.generateMaterialsCSV()], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    Object.assign(document.createElement('a'), { href: url, download: 'materials_list.csv' }).click();
-    URL.revokeObjectURL(url);
+    const meta = currentActiveRoot?.get?.('Metadata') ?? originalNbt?.root?.get?.('Metadata');
+    const str = key => { const t = meta?.get?.(key); return (t?.getAsString?.() ?? t?.value ?? '').toString().trim(); };
+    const b = currentBuilder.getActualBounds();
+    const fileName = document.getElementById('file-input').files[0]?.name
+      || (currentExtLink ? decodeURIComponent(currentExtLink.split(/[?#]/)[0].split('/').pop() || '') : '');
+    openMaterialsDialog(currentBuilder, {
+      name: str('Name'),
+      author: str('Author'),
+      fileName,
+      size: [b.maxX - b.minX + 1, b.maxY - b.minY + 1, b.maxZ - b.minZ + 1],
+    });
   });
+
+  // Warm the item catalog in the background so icons are ready on first open.
+  loadItemCatalog();
 
   document.getElementById('toggle-grid').addEventListener('change', (e) => {
     showGrid = e.target.checked;
