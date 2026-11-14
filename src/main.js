@@ -590,7 +590,7 @@ async function init() {
     const ok = (plans || []).filter(p => p.ok);
     const out = [];
     try {
-      const growthAxes = [...new Set(ok.map(p => p.axis))];
+      const growthAxes = [...new Set(ok.flatMap(p => p.growthAxes))];
       if (growthAxes.length) {
         const s1 = probeManualSize(1), s2 = probeManualSize(2);
         for (const axis of growthAxes) {
@@ -837,8 +837,10 @@ async function init() {
         if (plan && !plan.ok) {
           meta = `⚠️ ${plan.error}`;
         } else if (plan) {
-          const parts = [`grows ${plan.dir > 0 ? '+' : '−'}${plan.axis.toUpperCase()}`, `step ${plan.stride}`, `×${plan.count}`];
-          if (plan.capGap) parts.push(`${plan.capGap}-block gap kept`);
+          // One part per arm, e.g. "grows +X · step 16 ×4" and "grows −X · step 16 ×4".
+          const parts = plan.arms.map(arm =>
+            `grows ${arm.dir > 0 ? '+' : '−'}${arm.axis.toUpperCase()} · step ${arm.stride} ×${arm.count}` +
+            (arm.capGap ? ` (${arm.capGap}-block gap kept)` : ''));
           const pushes = Object.entries(plan.pushedBy).map(([key, { by, amount }]) => key.startsWith('gap ')
             ? `${amount} ${key.slice(4)} (gap after ${clusterName(by)})`
             : `${amount} ${key} (by ${clusterName(by)})`);

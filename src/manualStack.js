@@ -3,20 +3,21 @@
 // The user groups regions into clusters. Inside a cluster every region has
 // a role:
 //   - region: stays where it is (the fixed base of the cluster)
-//   - step:   repeated. All step regions together form one repeating block
+//   - step:   repeated
 //   - cap:    moved to the end of the last step copy
 //
-// A cluster grows from its steps toward its cap. The axis/direction is
-// inferred from where the cap block sits compared with the step block (it
-// must be past it along one axis and line up on the other two; an air gap
-// between them is kept).
+// A cluster has one or more arms. Each cap takes the steps right behind it
+// (lined up on the other two axes; an air gap between them is kept) plus the
+// steps chained behind those in a straight line. An arm grows from its
+// steps toward its caps — so one cluster can grow both ways (e.g. a world
+// eater with a step + cap on each side of a fixed middle).
 //
 // Clusters move each other:
-//   - growth: a cluster whose Region+Steps sit entirely past another
-//     cluster's steps (along that cluster's growth direction) is pushed by
-//     that cluster's growth
-//   - cluster gap: a cluster beside another one (overlapping it along its
-//     growth axis and on the remaining axis) and entirely past it sideways
+//   - growth: a cluster whose Region+Steps sit entirely past one of another
+//     cluster's arms (along that arm's direction) is pushed by that arm's
+//     growth
+//   - cluster gap: a cluster beside another one (overlapping it on every axis
+//     but one it doesn't grow along) and entirely past it on that axis
 //     (toward +) is pushed by the gap
 // A cluster's shift is the largest (pusher shift + amount) over all its
 // pushers, per kind of push, so clusters side by side don't add up; different
@@ -92,16 +93,95 @@ export function getRegionWorlds(nbt) {
 
 // ── Planning ─────────────────────────────────────────────────────────────────
 
+// Largest air gap (blocks) allowed between a Cap and the Steps it belongs to.
+const MAX_CAP_GAP = 32;
+
+const linedUp = (a, b, axis) => AXES.filter(x => x !== axis).every(x => overlaps(a, b, x));
+
+// Splits a cluster's steps and caps into arms, starting from each cap:
+//   1. pick the axis/direction where the nearest lined-up steps sit right
+//      behind the cap (smallest air gap wins),
+//   2. take those steps plus any steps chained behind them in a straight
+//      line along that axis (a step made of several pieces in a row).
+// Steps only touching sideways (e.g. the next row) don't join that arm.
+// Caps whose step chains overlap and grow the same way share one arm.
+// Every step must end up in exactly one arm.
+// Returns { arms } or { error }.
+function buildArms(worlds, steps, caps) {
+  const box = n => unionBox([worlds[n]]);
+  const arms = [];
+
+  for (const cap of caps) {
+    const cb = box(cap);
+    let best = null;
+    for (const axis of AXES) {
+      for (const dir of [1, -1]) {
+        const cands = steps
+          .map(n => ({ n, b: box(n) }))
+          .filter(({ b }) => linedUp(b, cb, axis))
+          .map(c => ({ ...c, gap: dir > 0 ? cb.min[axis] - c.b.max[axis] - 1 : c.b.min[axis] - cb.max[axis] - 1 }))
+          .filter(c => c.gap >= 0 && c.gap <= MAX_CAP_GAP);
+        if (!cands.length) continue;
+        const gap = Math.min(...cands.map(c => c.gap));
+        if (best && gap >= best.capGap) continue;
+
+        const chain = new Set(cands.filter(c => c.gap === gap).map(c => c.n));
+        for (let grew = true; grew;) {
+          grew = false;
+          for (const n of steps) {
+            if (chain.has(n)) continue;
+            const b = box(n);
+            const behind = [...chain].some(m => {
+              const mb = box(m);
+              const touching = dir > 0 ? b.max[axis] + 1 === mb.min[axis] : b.min[axis] - 1 === mb.max[axis];
+              return touching && linedUp(b, mb, axis);
+            });
+            if (behind) { chain.add(n); grew = true; }
+          }
+        }
+        best = { axis, dir, capGap: gap, steps: [...chain] };
+      }
+    }
+    if (!best) return { error: `Cap "${cap}" has no Step right behind it (lined up on the other two axes)` };
+
+    const same = arms.find(a => a.axis === best.axis && a.dir === best.dir && a.steps.some(s => best.steps.includes(s)));
+    if (same) {
+      same.caps.push(cap);
+      same.steps = [...new Set([...same.steps, ...best.steps])];
+      same.capGap = Math.min(same.capGap, best.capGap);
+    } else {
+      arms.push({ ...best, caps: [cap] });
+    }
+  }
+
+  const owner = new Map();
+  for (const arm of arms) {
+    for (const s of arm.steps) {
+      if (owner.has(s)) return { error: `Step "${s}" has Caps on different sides; use one Step per direction` };
+      owner.set(s, arm);
+    }
+  }
+  const orphans = steps.filter(s => !owner.has(s));
+  if (orphans.length) {
+    return { error: `Step${orphans.length > 1 ? 's' : ''} "${orphans.join(', ')}" ha${orphans.length > 1 ? 've' : 's'} no Cap in front` };
+  }
+
+  for (const arm of arms) {
+    arm.stepBox = unionBox(arm.steps.map(n => worlds[n]));
+    arm.stride = arm.stepBox.max[arm.axis] - arm.stepBox.min[arm.axis] + 1;
+  }
+  return { arms };
+}
+
 // Works out, for every cluster, how it grows and how far it gets pushed.
 //
 // `clusters` is an array of { regions: [{ name, role }] }.
 // Returns one plan per cluster (same order):
 //   ok:       false when the cluster can't be stacked (see `error`)
-//   axis/dir: growth direction, from the steps toward the cap
-//   capGap:   air between the step block and the cap block (kept)
-//   stride:   length of the step block along the axis
-//   count:    number of step copies (LCM of strides on the same axis / stride × cycles)
-//   growth:   (count − 1) × stride
+//   arms:     one per step block: { steps, caps, axis, dir, capGap, stride,
+//             count, growth } — grows from its steps toward its caps;
+//             count = LCM of strides on the same axis / stride × cycles,
+//             growth = (count − 1) × stride
 //   shift:    { x, y, z } the whole cluster is moved by
 //   pushedBy: { "<key>": { by: clusterIndex, amount } } for explaining moves
 //   gapSides: axes this cluster gets pushed along by the cluster gap (even
@@ -120,27 +200,22 @@ export function planClusters(worlds, clusters, cycles = 1, clusterGap = 0) {
     const steps = byRole('step'), caps = byRole('cap'), bases = byRole('region');
     if (!steps.length || !caps.length) { plan.error = 'needs at least one Step and one Cap'; return plan; }
 
-    const stepBox = unionBox(steps.map(n => worlds[n]));
-    const capBox = unionBox(caps.map(n => worlds[n]));
+    const { arms, error } = buildArms(worlds, steps, caps);
+    if (error) { plan.error = error; return plan; }
 
-    let det = null;
-    for (const axis of AXES) {
-      if (!AXES.filter(a => a !== axis).every(a => overlaps(stepBox, capBox, a))) continue;
-      if (capBox.min[axis] > stepBox.max[axis]) det = { axis, dir: 1, capGap: capBox.min[axis] - stepBox.max[axis] - 1 };
-      else if (capBox.max[axis] < stepBox.min[axis]) det = { axis, dir: -1, capGap: stepBox.min[axis] - capBox.max[axis] - 1 };
-      if (det) break;
-    }
-    if (!det) { plan.error = 'the Cap must sit past the Steps along one axis, lined up on the other two'; return plan; }
-
-    if (bases.length) {
-      const baseBox = unionBox(bases.map(n => worlds[n]));
-      const fixedSide = det.dir > 0 ? baseBox.max[det.axis] < stepBox.min[det.axis] : baseBox.min[det.axis] > stepBox.max[det.axis];
-      if (!fixedSide) plan.warnings.push('its Region isn\'t on the opposite side of the Steps from the Cap');
+    // A Region on the cap side of an arm would be overrun by its Step copies.
+    for (const name of bases) {
+      const box = unionBox([worlds[name]]);
+      const overrun = arms.find(arm => (arm.dir > 0
+        ? box.min[arm.axis] > arm.stepBox.max[arm.axis]
+        : box.max[arm.axis] < arm.stepBox.min[arm.axis]) &&
+        AXES.filter(a => a !== arm.axis).every(a => overlaps(box, arm.stepBox, a)));
+      if (overrun) plan.warnings.push(`Region "${name}" is on the Cap side of Steps "${overrun.steps.join(', ')}"`);
     }
 
-    Object.assign(plan, det, {
-      ok: true, steps, caps, bases, stepBox,
-      stride: stepBox.max[det.axis] - stepBox.min[det.axis] + 1,
+    Object.assign(plan, {
+      ok: true, steps, caps, bases, arms,
+      growthAxes: [...new Set(arms.map(a => a.axis))],
       anchor: unionBox([...bases, ...steps].map(n => worlds[n])),
       full: unionBox(cluster.regions.map(r => worlds[r.name])),
     });
@@ -148,34 +223,38 @@ export function planClusters(worlds, clusters, cycles = 1, clusterGap = 0) {
   });
 
   const ok = plans.filter(p => p.ok);
+  const allArms = ok.flatMap(p => p.arms);
 
-  // Copies: clusters on the same axis share the LCM of their strides, so
-  // their step blocks end up the same total length.
+  // Copies: arms on the same axis share the LCM of their strides, so their
+  // step blocks end up the same total length.
   const lcmByAxis = {};
-  for (const p of ok) lcmByAxis[p.axis] = lcmByAxis[p.axis] ? lcm(lcmByAxis[p.axis], p.stride) : p.stride;
-  for (const p of ok) {
-    p.count = Math.max(1, Math.round((lcmByAxis[p.axis] / p.stride) * safeCycles));
-    p.growth = (p.count - 1) * p.stride;
+  for (const arm of allArms) lcmByAxis[arm.axis] = lcmByAxis[arm.axis] ? lcm(lcmByAxis[arm.axis], arm.stride) : arm.stride;
+  for (const arm of allArms) {
+    arm.count = Math.max(1, Math.round((lcmByAxis[arm.axis] / arm.stride) * safeCycles));
+    arm.growth = (arm.count - 1) * arm.stride;
   }
 
-  // Who pushes whom.
+  // Who pushes whom: each arm of A pushes clusters whose Region+Steps sit
+  // entirely past that arm's steps; the cluster gap pushes clusters beside
+  // A (overlapping it on every axis but one that A doesn't grow along) and
+  // entirely past it on that axis.
   for (const b of ok) {
     b.growthPushers = [];
     b.gapPushers = [];
     for (const a of ok) {
       if (a === b) continue;
 
-      const past = a.dir > 0
-        ? b.anchor.min[a.axis] > a.stepBox.max[a.axis]
-        : b.anchor.max[a.axis] < a.stepBox.min[a.axis];
-      if (past) b.growthPushers.push(a);
+      for (const arm of a.arms) {
+        const past = arm.dir > 0
+          ? b.anchor.min[arm.axis] > arm.stepBox.max[arm.axis]
+          : b.anchor.max[arm.axis] < arm.stepBox.min[arm.axis];
+        if (past) b.growthPushers.push({ a, arm });
+      }
 
       // Found even at gap 0, so callers know which axes the gap would affect.
-      if (overlaps(b.full, a.full, a.axis)) {
-        for (const side of AXES.filter(x => x !== a.axis)) {
-          const rest = AXES.find(x => x !== a.axis && x !== side);
-          if (overlaps(b.full, a.full, rest) && b.full.min[side] > a.full.max[side]) b.gapPushers.push({ a, side });
-        }
+      for (const side of AXES.filter(x => !a.growthAxes.includes(x))) {
+        const lined = AXES.filter(x => x !== side).every(x => overlaps(b.full, a.full, x));
+        if (lined && b.full.min[side] > a.full.max[side]) b.gapPushers.push({ a, side });
       }
     }
   }
@@ -194,7 +273,9 @@ export function planClusters(worlds, clusters, cycles = 1, clusterGap = 0) {
   for (let i = 0; i <= ok.length * 2; i++) {
     let changed = false;
     for (const b of ok) {
-      for (const a of b.growthPushers) if (a.growth > 0) changed = relax(b, a, dirKey(a.axis, a.dir), a.growth) || changed;
+      for (const { a, arm } of b.growthPushers) {
+        if (arm.growth > 0) changed = relax(b, a, dirKey(arm.axis, arm.dir), arm.growth) || changed;
+      }
       if (gap > 0) {
         for (const { a, side } of b.gapPushers) changed = relax(b, a, `gap ${dirKey(side, 1)}`, gap) || changed;
       }
@@ -248,14 +329,16 @@ export function stackClusters(nbt, plans) {
   };
 
   for (const p of plans.filter(p => p.ok)) {
-    const along = k => ({ ...p.shift, [p.axis]: p.shift[p.axis] + k * p.dir });
     for (const n of p.bases) place(n, n, p.shift, p.index, 'region');
-    for (const n of p.steps) {
-      for (let k = 0; k < p.count; k++) {
-        place(k === 0 ? n : uniqueName(`${n}_${k}`), n, along(k * p.stride), p.index, 'step');
+    for (const arm of p.arms) {
+      const along = k => ({ ...p.shift, [arm.axis]: p.shift[arm.axis] + k * arm.dir });
+      for (const n of arm.steps) {
+        for (let k = 0; k < arm.count; k++) {
+          place(k === 0 ? n : uniqueName(`${n}_${k}`), n, along(k * arm.stride), p.index, 'step');
+        }
       }
+      for (const n of arm.caps) place(n, n, along(arm.growth), p.index, 'cap');
     }
-    for (const n of p.caps) place(n, n, along(p.growth), p.index, 'cap');
   }
 
   // ── Patch EnclosingSize from the actual bounding box of every region ──────
