@@ -16,116 +16,130 @@
       </button>
       <!-- ================= CONTROLS PANEL ================= -->
       <div class="controls-panel" id="controls-panel">
-        <h1>
+        <header class="panel-header">
           <img src="https://cdn.minemev.com/static/base_images/favicon.ico" alt="">
-          Controls
-        </h1>
+          <span class="panel-title">mine<span class="accent">mev</span> renderer</span>
+        </header>
 
         <!-- ── File ── -->
         <div class="file-input-section" id="file-drop-area">
-          <p>📂 Drag & Drop Litematic here or click to browse</p>
+          <span class="drop-icon">📂</span>
+          <span class="drop-text"><b>Drop a .litematic here</b><small>or click to browse</small></span>
           <input id="file-input" type="file" accept=".litematic">
         </div>
-        <div class="button-group file-actions">
-          <button id="download-litematic" class="btn-primary">📦 Download Litematic</button>
+        <div class="file-actions">
+          <button id="download-litematic" class="btn-primary">📦 Download litematic</button>
           <div class="button-row">
             <button id="download-materials">🧱 Materials</button>
             <button id="clear-button">🗑️ Clear</button>
           </div>
         </div>
 
-        <!-- ── View ── -->
-        <div class="panel-section">
-          <div class="section-title">View</div>
-          <label class="check-row">
-            <input type="checkbox" id="toggle-grid" checked>
-            Show grid
-          </label>
-          <label class="check-row">
-            <input type="checkbox" id="toggle-region-boxes" checked>
-            Show region boxes
-          </label>
-          <div id="version-controls" style="display:none;">
-            <label for="version-override">NBT version</label>
-            <input id="version-override" type="number" min="1" max="99">
+        <!-- ── Size (moved right under the downloads when a config is preloaded) ── -->
+        <details class="panel-section" id="size-section" style="display:none;" open>
+          <summary class="section-title">Size <span class="unit">blocks</span></summary>
+          <div class="section-body">
+            <div id="enclosing-size-display" class="size-grid"></div>
+            <p class="hint">Green axes can be changed: use − / + or type a size and press Enter.</p>
           </div>
-        </div>
-
-        <!-- ── Regions ── -->
-        <div class="panel-section" id="region-edit-controls" style="display:none;">
-          <div class="section-title">Regions</div>
-          <p class="hint">Click a region in the 3D view to select it, then:</p>
-          <div class="key-legend">
-            <span><span class="hud-key">◄►▲▼</span> move X / Z</span>
-            <span><span class="hud-key">H</span> <span class="hud-key">Y</span> up / down</span>
-            <span><span class="hud-key">C</span> clone</span>
-            <span><span class="hud-key">Del</span> delete</span>
-          </div>
-          <div class="button-group">
-            <button id="save-region-edits" disabled>💾 Save region edits</button>
-          </div>
-          <div id="region-edit-status" class="status-line"></div>
-        </div>
+        </details>
 
         <!-- ── Stacking ── -->
-        <div class="panel-section" id="stacking-section" style="display:none;">
-          <div class="section-title">Stacking</div>
+        <details class="panel-section" id="stacking-section" style="display:none;" open>
+          <summary class="section-title">Stacking</summary>
+          <div class="section-body">
+            <p class="hint" id="stack-mode-hint">Click a region in the 3D view, then add it to a cluster as
+              <b class="t-region">Region</b> (stays), <b class="t-step">Step</b> (repeats) or <b class="t-cap">Cap</b> (moves to the end).</p>
 
-          <p class="hint" id="stack-mode-hint">You choose what repeats. Pick a Step (the piece that gets repeated) and a Cap (the end piece touching it).</p>
+            <div id="stack-controls" class="setting-grid">
+              <div class="setting" title="Repeats the Steps of every cluster">
+                <span class="setting-label">Cycles</span>
+                <div class="stepper">
+                  <button type="button" data-step-target="stack-count" data-delta="-1" title="One less">−</button>
+                  <input id="stack-count" type="number" min="1" value="1">
+                  <button type="button" data-step-target="stack-count" data-delta="1" title="One more">+</button>
+                </div>
+              </div>
+              <div class="setting" title="Blocks between clusters that sit side by side">
+                <span class="setting-label">Cluster gap</span>
+                <div class="stepper">
+                  <button type="button" data-step-target="cluster-gap" data-delta="-1" title="One less">−</button>
+                  <input id="cluster-gap" type="number" min="0" value="0">
+                  <button type="button" data-step-target="cluster-gap" data-delta="1" title="One more">+</button>
+                </div>
+              </div>
+            </div>
 
-          <div id="stack-controls">
-            <div class="field-row">
-              <div class="field-label">
-                <span>Cycles</span>
-                <small>Repeats the whole Step/Cap pattern</small>
+            <div id="manual-stack-controls">
+              <div class="selection-box">
+                <div class="manual-selected empty" id="manual-selected">
+                  <span class="manual-selected-label">Selected</span>
+                  <b id="manual-selected-name">click a region in the 3D view</b>
+                </div>
+                <span class="cluster-add-label" id="cluster-add-label">Add to cluster A as</span>
+                <div class="cluster-add-buttons">
+                  <button type="button" id="add-as-region" class="role-btn region" disabled>Region</button>
+                  <button type="button" id="add-as-step" class="role-btn step" disabled>Step</button>
+                  <button type="button" id="add-as-cap" class="role-btn cap" disabled>Cap</button>
+                </div>
               </div>
-              <div class="stepper">
-                <button type="button" data-step-target="stack-count" data-delta="-1" title="One less">−</button>
-                <input id="stack-count" type="number" min="1" value="1">
-                <button type="button" data-step-target="stack-count" data-delta="1" title="One more">+</button>
+
+              <div class="list-header">
+                <span>Clusters</span>
+                <button type="button" id="add-cluster" class="btn-small">＋ New cluster</button>
               </div>
+              <div id="manual-config-list"></div>
+
+              <div class="button-row">
+                <button id="manual-copy-link" disabled>📋 Copy config</button>
+                <button id="manual-clear-configs" class="btn-quiet-danger">🗑️ Clear all</button>
+              </div>
+              <div id="manual-status" class="status-line"></div>
             </div>
           </div>
+        </details>
 
-          <div id="manual-stack-controls">
-            <div class="manual-selected empty" id="manual-selected">
-              <span class="manual-selected-label">Selected</span>
-              <b id="manual-selected-name">click a region in the 3D view</b>
+        <!-- ── Regions ── -->
+        <details class="panel-section" id="region-edit-controls" style="display:none;">
+          <summary class="section-title">Edit regions</summary>
+          <div class="section-body">
+            <p class="hint">Click a region in the 3D view to select it, then:</p>
+            <div class="key-legend">
+              <span><span class="hud-key">◄►▲▼</span> move X / Z</span>
+              <span><span class="hud-key">H</span> <span class="hud-key">Y</span> up / down</span>
+              <span><span class="hud-key">C</span> clone</span>
+              <span><span class="hud-key">Del</span> delete</span>
             </div>
-
-            <div class="pair-builder">
-              <div class="pair-slot" id="slot-step">
-                <span class="slot-tag step">STEP</span>
-                <span class="slot-name" id="manual-step-label">not set</span>
-                <button type="button" class="icon-btn" id="manual-clear-step" title="Clear Step" style="visibility:hidden;">✕</button>
-                <button type="button" class="slot-set" id="manual-set-step" disabled>Use selected</button>
-              </div>
-              <div class="pair-slot" id="slot-cap">
-                <span class="slot-tag cap">CAP</span>
-                <span class="slot-name" id="manual-cap-label">not set</span>
-                <button type="button" class="icon-btn" id="manual-clear-cap" title="Clear Cap" style="visibility:hidden;">✕</button>
-                <button type="button" class="slot-set" id="manual-set-cap" disabled>Use selected</button>
-              </div>
-              <div id="manual-pair-check" class="pair-check" style="display:none;"></div>
-              <button id="manual-save-config" class="btn-primary" disabled>＋ Add pair</button>
-            </div>
-
-            <div id="manual-config-list"></div>
-
-            <div class="button-group">
-              <button id="manual-copy-link" disabled>📋 Copy stacking config</button>
-              <button id="manual-clear-configs">🗑️ Clear all pairs</button>
-            </div>
-            <div id="manual-status" class="status-line"></div>
+            <button id="save-region-edits" disabled>💾 Save region edits</button>
+            <div id="region-edit-status" class="status-line"></div>
           </div>
-        </div>
+        </details>
 
-        <!-- ── Size ── -->
-        <div class="panel-section" id="size-section" style="display:none;">
-          <div class="section-title">Size <span class="unit">blocks</span></div>
-          <div id="enclosing-size-display" class="size-grid"></div>
-          <p class="hint">Highlighted axes can be changed: use − / + or type a size and press Enter.</p>
-        </div>
+        <!-- ── View ── -->
+        <details class="panel-section">
+          <summary class="section-title">View</summary>
+          <div class="section-body">
+            <label class="switch-row">
+              <input type="checkbox" id="toggle-grid" checked>
+              <span class="switch"></span>
+              Grid
+            </label>
+            <label class="switch-row">
+              <input type="checkbox" id="toggle-region-boxes" checked>
+              <span class="switch"></span>
+              Region boxes
+            </label>
+            <label class="switch-row" title="Tint cluster regions: Region red, Step green, Cap blue">
+              <input type="checkbox" id="toggle-cluster-highlight">
+              <span class="switch"></span>
+              Highlight cluster regions
+            </label>
+            <div id="version-controls" style="display:none;">
+              <label for="version-override">NBT version</label>
+              <input id="version-override" type="number" min="1" max="99">
+            </div>
+          </div>
+        </details>
 
       </div>
       <script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
@@ -168,8 +182,10 @@
               <span class="hud-key">Del</span> delete
             </div>
             <div id="hud-manual-actions" class="hud-actions">
-              <button type="button" id="hud-set-step" class="hud-btn step" disabled>Set as Step</button>
-              <button type="button" id="hud-set-cap" class="hud-btn cap" disabled>Set as Cap</button>
+              <span class="hud-cluster" id="hud-cluster-label">→ A</span>
+              <button type="button" id="hud-add-region" class="hud-btn region" disabled>Region</button>
+              <button type="button" id="hud-add-step" class="hud-btn step" disabled>Step</button>
+              <button type="button" id="hud-add-cap" class="hud-btn cap" disabled>Cap</button>
             </div>
           </div>
 

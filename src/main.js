@@ -7,7 +7,7 @@ import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
 import { localToWorld, nbtNum, cloneRegionWithPosition } from './validate.js';
-import { manualStackMulti, resolveManualCycleCounts, detectManualStackAxis, encodeManualConfig, decodeManualConfig } from './manualStack.js';
+import { planClusters, stackClusters, getRegionWorlds, encodeStackConfig, decodeStackConfig } from './manualStack.js';
 
 // Region names come from the uploaded file, so escape them before they go
 // anywhere near innerHTML.
@@ -16,10 +16,11 @@ function esc(str) {
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Fill colors for the Step / Cap highlights in the 3D view (also used by the
-// STEP / CAP tags in the panel, see style.css).
-const STEP_COLOR = [0.25, 0.6, 1];
-const CAP_COLOR = [1, 0.6, 0.2];
+// Fill colors for the cluster Region / Step / Cap highlights in the 3D view
+// (match the REGION / STEP / CAP tags in the panel, see style.css).
+const REGION_COLOR = [0.95, 0.3, 0.3];
+const STEP_COLOR = [0.25, 0.75, 0.35];
+const CAP_COLOR = [0.25, 0.55, 1];
 
 // Distinct colors (RGB, 0-1) cycled across regions for their outline boxes.
 const REGION_BOX_COLORS = [
@@ -241,6 +242,8 @@ async function init() {
   const resourceLoader = new ResourceLoader();
   let showGrid = true;
   let showRegionBoxes = true;
+  // Red/green/blue tint over cluster regions; off by default.
+  let showClusterHighlight = false;
 
   const canvas = document.getElementById('structure-display');
   const gl = canvas.getContext('webgl');
@@ -262,8 +265,11 @@ async function init() {
     selectedRegionName = null, selectionMesh = null, markerMeshes = [],
     // Axes the size card lets the user edit (see updateEnclosingSizeDisplay).
     sizeEditable = [],
-    manualCurrentStep = null, manualCurrentCap = null,
-    manualConfigs = [], currentExtLink = null,
+    // Stacking clusters: [{ regions: [{ name, role: 'region'|'step'|'cap' }] }],
+    // the one new regions get added to, and the role of every region in the
+    // last stacked result (copies included) for the 3D highlights.
+    clusters = [], activeCluster = 0, lastRoles = null,
+    currentExtLink = null,
     // The root NBT compound backing whatever is currently on screen (post
     // stack if any, otherwise the original) — kept in sync so
     // the keyboard region-editing controls (move/delete) always mutate the
@@ -513,17 +519,14 @@ async function init() {
     originalBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     originalNbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
 
-    // Drop any saved Step/Cap pairs that referenced a region which no longer
-    // exists (e.g. it was just deleted) instead of leaving the UI stuck
-    // showing a permanent "region not found" error for them.
+    // Drop cluster entries for regions that no longer exist (e.g. one was
+    // just deleted), and clusters left empty by that.
     const remainingNames = new Set(originalNbt.root.get('Regions').keys());
-    const before = manualConfigs.length;
-    manualConfigs = manualConfigs.filter(c => remainingNames.has(c.stepName) && remainingNames.has(c.capName));
-    if (manualConfigs.length !== before) {
-      manualCurrentStep = null;
-      manualCurrentCap = null;
-      renderManualConfigList();
-    }
+    clusters = clusters
+      .map(c => ({ regions: c.regions.filter(r => remainingNames.has(r.name)) }))
+      .filter(c => c.regions.length);
+    activeCluster = Math.min(activeCluster, Math.max(0, clusters.length - 1));
+    renderClusterList();
 
     hasUnsavedRegionEdits = false;
     updateSaveEditsButton();
@@ -536,7 +539,7 @@ async function init() {
     syncVersionInput(originalNbt);
     updateManualStatus();
 
-    if (manualConfigs.length) {
+    if (hasStackableCluster()) {
       await applyManualStack();
     } else {
       await renderStructure(originalNbt);
@@ -569,52 +572,66 @@ async function init() {
   }
   const parseOriginal = () => deepslate.NbtFile.read(new Uint8Array(originalBuffer));
 
-  function probeManualSize(cycles) {
-    // Pairs are part of the key: the same file gives different sizes when
-    // the saved pairs change.
-    const key = `m|${cycles}|${manualConfigs.map(c => c.stepName + '>' + c.capName).join(',')}`;
+  function probeManualSize(cycles, gap = readClusterGap()) {
+    // Clusters and gap are part of the key: the same file gives different
+    // sizes when they change.
+    const key = `m|${cycles}|${gap}|${JSON.stringify(clusters)}`;
     return memoProbe(key, () => {
-      const nbt = parseOriginal();
-      const resolved = resolveManualCycleCounts(nbt, manualConfigs, cycles);
-      return readEnclosing(manualStackMulti(nbt, resolved).nbt.root);
+      const plans = planClusters(getOriginalRegionWorlds(), clusters, cycles, gap);
+      return readEnclosing(stackClusters(parseOriginal(), plans).nbt.root);
     });
   }
 
   // Describes which size axes are editable, so the size card can render them
-  // as steppers with a short "what this does" note: every axis a saved pair
-  // stacks along changes Cycles.
-  function describeEditableAxes(axes) {
+  // as steppers with a short "what this does" note: every axis a cluster
+  // grows along changes Cycles; an axis clusters sit side by side on (and
+  // don't grow along) changes the Cluster gap.
+  function describeEditableAxes(plans) {
+    const ok = (plans || []).filter(p => p.ok);
+    const out = [];
     try {
-      if (axes?.length) {
+      const growthAxes = [...new Set(ok.map(p => p.axis))];
+      if (growthAxes.length) {
         const s1 = probeManualSize(1), s2 = probeManualSize(2);
-        return axes.map(axis => {
+        for (const axis of growthAxes) {
           const per = s2[axis] - s1[axis];
-          return { axis, role: 'cycle', note: per > 0 ? `+${per} per cycle` : 'cycles' };
-        });
+          out.push({ axis, role: 'cycle', note: per > 0 ? `+${per} per cycle` : 'cycles' });
+        }
+      }
+      const gapAxes = [...new Set(ok.flatMap(p => p.gapSides))].filter(a => !growthAxes.includes(a));
+      if (gapAxes.length) {
+        const cycles = readCycles();
+        const g0 = probeManualSize(cycles, 0), g1 = probeManualSize(cycles, 1);
+        for (const axis of gapAxes) {
+          const per = g1[axis] - g0[axis];
+          if (per > 0) out.push({ axis, role: 'gap', note: `+${per} per gap block` });
+        }
       }
     } catch (err) {
       console.error('Failed to describe editable axes:', err);
     }
-    return [];
+    return out;
   }
 
   // Renders the size card: one cell per axis (X / Y / Z). Axes that stacking
   // can change get −/+ buttons and an editable field with a note saying what
   // moving them does; the rest are read-only. Typing a size and pressing
-  // Enter (or leaving the field) finds the cycle count that gets closest to it.
+  // Enter (or leaving the field) finds the cycle count (or cluster gap) that
+  // gets closest to it.
   function updateEnclosingSizeDisplay(w, h, d, editable = []) {
     sizeEditable = editable;
     const container = document.getElementById('enclosing-size-display');
     const dims = { x: w, y: h, z: d };
     const byAxis = Object.fromEntries(editable.map(e => [e.axis, e]));
 
+    // One row per axis: tag · value (or −/input/+ when editable) · note.
     container.innerHTML = ['x', 'y', 'z'].map(axis => {
       const e = byAxis[axis];
       const tag = `<span class="size-axis-tag axis-${axis}">${axis.toUpperCase()}</span>`;
       if (!e) {
-        return `<div class="size-cell">${tag}<input type="number" class="size-axis-input" value="${dims[axis]}" disabled></div>`;
+        return `<div class="size-row">${tag}<span class="size-value">${dims[axis]}</span><span class="size-note">fixed</span></div>`;
       }
-      return `<div class="size-cell editable">${tag}
+      return `<div class="size-row editable">${tag}
         <div class="size-field">
           <button type="button" class="size-step" data-axis="${axis}" data-delta="-1" title="One less">−</button>
           <input type="number" min="1" step="1" class="size-axis-input size-axis-editable" data-axis="${axis}" value="${dims[axis]}">
@@ -623,9 +640,10 @@ async function init() {
         <span class="size-note">${esc(e.note)}</span></div>`;
     }).join('');
 
-    // −/+ move the Cycles control by exactly one unit.
+    // −/+ move the underlying control (Cycles or Cluster gap) by one unit.
+    const controlFor = axis => document.getElementById(byAxis[axis]?.role === 'gap' ? 'cluster-gap' : 'stack-count');
     container.querySelectorAll('.size-step').forEach(btn => btn.addEventListener('click', () => {
-      stepNumberInput(document.getElementById('stack-count'), parseInt(btn.dataset.delta, 10));
+      stepNumberInput(controlFor(btn.dataset.axis), parseInt(btn.dataset.delta, 10));
     }));
 
     container.querySelectorAll('input.size-axis-editable').forEach(input => {
@@ -635,7 +653,10 @@ async function init() {
         if (committing) return;
         committing = true;
         const target = Math.max(1, parseInt(input.value, 10) || 1);
-        if (target !== dims[axis]) await applyTargetCycleSize(target, axis);
+        if (target !== dims[axis]) {
+          if (byAxis[axis]?.role === 'gap') await applyTargetGapSize(target, axis);
+          else await applyTargetCycleSize(target, axis);
+        }
         committing = false;
       };
       input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
@@ -658,7 +679,7 @@ async function init() {
   // `axis` is closest to the target (growth is linear per cycle), applies
   // it, and re-renders.
   async function applyTargetCycleSize(targetSize, axis) {
-    if (!originalBuffer || !manualConfigs.length) return;
+    if (!originalBuffer || !hasStackableCluster()) return;
 
     let size1, size2;
     try {
@@ -675,7 +696,30 @@ async function init() {
       : 1;
 
     document.getElementById('stack-count').value = needed;
-    renderManualConfigList();
+    renderClusterList();
+    await applyManualStack();
+  }
+
+  // Finds the cluster gap whose resulting size along `axis` is closest to
+  // the target (each gap block adds a fixed amount), applies it, re-renders.
+  async function applyTargetGapSize(targetSize, axis) {
+    if (!originalBuffer || !hasStackableCluster()) return;
+
+    let size0, size1;
+    try {
+      const cycles = readCycles();
+      size0 = probeManualSize(cycles, 0)[axis];
+      size1 = probeManualSize(cycles, 1)[axis];
+    } catch (err) {
+      console.error('Failed to probe size for target gap:', err);
+      return;
+    }
+
+    const perGap = size1 - size0;
+    const needed = perGap > 0 ? Math.max(0, Math.round((targetSize - size0) / perGap)) : 0;
+
+    document.getElementById('cluster-gap').value = needed;
+    renderClusterList();
     await applyManualStack();
   }
 
@@ -688,220 +732,213 @@ async function init() {
     }
   }
 
-  // ── Manual Stacking ─────────────────────────────────────────────────────────
+  // ── Cluster stacking ───────────────────────────────────────────────────────
 
-  // World-space info for every region of the *original* file (what manual
-  // stacking actually operates on), memoized per loaded file.
+  // World-space info for every region of the *original* file (what stacking
+  // actually operates on), memoized per loaded file.
   function getOriginalRegionWorlds() {
-    return memoProbe('regionWorlds', () => {
-      const regions = parseOriginal().root.get('Regions');
-      const out = {};
-      for (const name of regions.keys()) {
-        const e = regions.get(name);
-        out[name] = localToWorld(readRegionVec(e, 'Position'), readRegionVec(e, 'Size'));
-      }
-      return out;
-    });
+    return memoProbe('regionWorlds', () => getRegionWorlds(parseOriginal()));
   }
 
-  // Live feedback for the pair being built: is this Step/Cap combination
-  // something manualStackMulti can actually stack? Returns null while the
-  // pair is incomplete, otherwise { kind: 'ok' | 'warn' | 'error', msg }.
-  function checkPair(step, cap) {
-    if (!step || !cap || !originalBuffer) return null;
-    if (step === cap) return { kind: 'error', msg: 'Step and Cap must be two different regions.' };
+  const clusterName = i => (i < 26 ? String.fromCharCode(65 + i) : `C${i + 1}`);
+  const readCycles = () => Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+  const readClusterGap = () => Math.max(0, parseInt(document.getElementById('cluster-gap').value, 10) || 0);
+  const ROLE_ORDER = ['region', 'step', 'cap'];
+  const ROLE_COLOR = { region: REGION_COLOR, step: STEP_COLOR, cap: CAP_COLOR };
 
-    let worlds;
-    try { worlds = getOriginalRegionWorlds(); } catch { return null; }
-
-    for (const name of [step, cap]) {
-      if (!worlds[name]) {
-        return { kind: 'error', msg: `"${name}" is a generated copy, not an original region. Pick an original one.` };
-      }
+  // Plans for the saved clusters (see planClusters), or null without a file.
+  function currentPlans() {
+    if (!originalBuffer || !clusters.length) return null;
+    try {
+      return planClusters(getOriginalRegionWorlds(), clusters, readCycles(), readClusterGap());
+    } catch (err) {
+      console.error('Failed to plan clusters:', err);
+      return null;
     }
-
-    const det = detectManualStackAxis(worlds[step], worlds[cap]);
-    if (!det) {
-      return { kind: 'error', msg: "These regions don't touch. Step and Cap must be side by side along one axis and line up on the other two." };
-    }
-    if (manualConfigs.some(c => c.stepName === step && c.capName === cap)) {
-      return { kind: 'error', msg: 'This pair is already saved.' };
-    }
-
-    const used = new Set(manualConfigs.flatMap(c => [c.stepName, c.capName]));
-    const reused = [step, cap].find(n => used.has(n));
-    if (reused) {
-      return { kind: 'warn', msg: `"${reused}" is already part of another pair. This usually gives odd results.` };
-    }
-
-    const sign = det.direction > 0 ? '+' : '−';
-    return { kind: 'ok', msg: `Touching along ${sign}${det.axis.toUpperCase()} · Step is ${worlds[step].size[det.axis]} blocks long` };
+  }
+  function hasStackableCluster() {
+    return !!currentPlans()?.some(p => p.ok);
   }
 
-  // Paints the pending Step (blue) and Cap (orange) in the 3D view so it's
-  // obvious which regions are picked, without needing to read the panel.
+  // Adds the selected region to the active cluster with `role` (creating
+  // cluster A if there's none yet). A region belongs to one cluster with one
+  // role, so it's taken out of wherever it was before.
+  async function addSelectedToCluster(role) {
+    const name = selectedRegionName;
+    if (!name || !originalBuffer) return;
+    const status = document.getElementById('manual-status');
+    if (!getOriginalRegionWorlds()[name]) {
+      status.textContent = `"${name}" is a generated copy, not an original region. Pick an original one.`;
+      return;
+    }
+    if (!clusters.length) { clusters.push({ regions: [] }); activeCluster = 0; }
+    for (const c of clusters) c.regions = c.regions.filter(r => r.name !== name);
+    clusters[activeCluster].regions.push({ name, role });
+    status.textContent = '';
+    await clustersChanged();
+  }
+
+  // Refreshes the panel and the 3D view after any change to the clusters:
+  // stacks when at least one cluster is complete, otherwise shows the plain
+  // structure (only re-rendering if a stacked result is on screen).
+  async function clustersChanged() {
+    renderClusterList();
+    updateManualStatus();
+    if (!originalBuffer) return;
+    if (hasStackableCluster()) {
+      await applyManualStack();
+      return;
+    }
+    if (clusters.length) syncConfigToUrl(); else clearConfigFromUrl();
+    if (lastStackedNbt) await renderStructure(parseOriginal());
+  }
+
+  // Paints every cluster region in the 3D view by role: Region red, Step
+  // green, Cap blue. On a stacked result the Step copies are painted too.
   function rebuildMarkerMeshes() {
     markerMeshes = [];
     if (currentBuilder) {
       const bounds = currentBuilder.getRegionBoundsLocal();
-      for (const [name, color] of [[manualCurrentStep, STEP_COLOR], [manualCurrentCap, CAP_COLOR]]) {
-        const b = name && bounds[name];
+      const roles = {};
+      clusters.forEach((c, i) => c.regions.forEach(r => { roles[r.name] = { cluster: i, role: r.role }; }));
+      if (lastStackedNbt && lastRoles) Object.assign(roles, lastRoles);
+      for (const [name, { role }] of Object.entries(roles)) {
+        const b = bounds[name];
         if (!b) continue;
-        markerMeshes.push(buildBoxFillMesh(gl, b.min, [b.max[0] + 1, b.max[1] + 1, b.max[2] + 1], color));
+        markerMeshes.push(buildBoxFillMesh(gl, b.min, [b.max[0] + 1, b.max[1] + 1, b.max[2] + 1], ROLE_COLOR[role]));
       }
     }
     currentCamera?.redraw();
   }
 
-  // Renders the list of saved Step/Cap pairs. Each pair's repeat count is
-  // auto-computed from the LCM of step widths sharing an axis (see
-  // resolveManualCycleCounts), scaled by the shared Cycles field. This keeps
-  // Caps from differently-sized Step regions evenly spaced instead of
-  // drifting apart.
-  function renderManualConfigList() {
+  // One card per cluster: its regions grouped by role (each removable), how
+  // it grows and what pushed it. Clicking a card makes it the active one.
+  function renderClusterList() {
     const container = document.getElementById('manual-config-list');
     container.innerHTML = '';
+    if (!clusters.length) return;
 
-    if (!manualConfigs.length) return;
+    const plans = currentPlans();
 
-    let resolved = null;
-    let errorMsg = null;
-    if (originalBuffer) {
-      try {
-        const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-        resolved = resolveManualCycleCounts(parseOriginal(), manualConfigs, cycles);
-      } catch (err) {
-        errorMsg = err.message;
+    clusters.forEach((cluster, i) => {
+      const plan = plans?.[i];
+      const lines = [];
+      if (!cluster.regions.length) {
+        lines.push('<div class="pair-meta">Empty: select a region and add it.</div>');
+      } else {
+        for (const role of ROLE_ORDER) {
+          for (const r of cluster.regions.filter(r => r.role === role)) {
+            lines.push(`<div class="pair-line"><span class="slot-tag ${role}">${role.toUpperCase()}</span>` +
+              `<span class="pair-name">${esc(r.name)}</span>` +
+              `<button type="button" class="icon-btn cluster-remove-region" data-cluster="${i}" data-name="${esc(r.name)}" title="Take out of the cluster">✕</button></div>`);
+          }
+        }
+        let meta = '…';
+        if (plan && !plan.ok) {
+          meta = `⚠️ ${plan.error}`;
+        } else if (plan) {
+          const parts = [`grows ${plan.dir > 0 ? '+' : '−'}${plan.axis.toUpperCase()}`, `step ${plan.stride}`, `×${plan.count}`];
+          if (plan.capGap) parts.push(`${plan.capGap}-block gap kept`);
+          const pushes = Object.entries(plan.pushedBy).map(([key, { by, amount }]) => key.startsWith('gap ')
+            ? `${amount} ${key.slice(4)} (gap after ${clusterName(by)})`
+            : `${amount} ${key} (by ${clusterName(by)})`);
+          if (pushes.length) parts.push(`pushed ${pushes.join(', ')}`);
+          meta = parts.join(' · ') + plan.warnings.map(w => ` · ⚠️ ${w}`).join('');
+        }
+        lines.push(`<div class="pair-meta">${esc(meta)}</div>`);
       }
-    }
-
-    const title = document.createElement('div');
-    title.className = 'pair-list-title';
-    title.textContent = `Saved pairs (${manualConfigs.length})`;
-    container.appendChild(title);
-
-    manualConfigs.forEach((cfg, i) => {
-      const info = resolved ? resolved[i] : null;
-      const meta = info
-        ? `×${info.stackCount} copies · ${info.direction > 0 ? '+' : '−'}${info.axis.toUpperCase()} · ${info.stride} blocks each`
-        : (errorMsg ? `⚠️ ${errorMsg}` : '…');
 
       const card = document.createElement('div');
-      card.className = 'pair-card' + (info ? '' : ' pair-card-error');
+      card.className = 'pair-card cluster-card' + (i === activeCluster ? ' active' : '') + (plan && !plan.ok ? ' pair-card-error' : '');
+      card.dataset.cluster = i;
+      card.title = i === activeCluster ? 'New regions are added to this cluster' : 'Click to add new regions to this cluster';
       card.innerHTML = `
-        <span class="pair-index">${i + 1}</span>
-        <div class="pair-body">
-          <div class="pair-line"><span class="slot-tag step">STEP</span><span class="pair-name">${esc(cfg.stepName)}</span></div>
-          <div class="pair-line"><span class="slot-tag cap">CAP</span><span class="pair-name">${esc(cfg.capName)}</span></div>
-          <div class="pair-meta">${esc(meta)}</div>
-        </div>
-        <button data-index="${i}" class="manual-remove-config icon-btn" title="Remove this pair">✕</button>
+        <span class="pair-index">${clusterName(i)}</span>
+        <div class="pair-body">${lines.join('')}</div>
+        <button type="button" data-cluster="${i}" class="cluster-remove icon-btn" title="Delete this cluster">✕</button>
       `;
       container.appendChild(card);
     });
-
-    container.querySelectorAll('.manual-remove-config').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        manualConfigs.splice(parseInt(btn.dataset.index, 10), 1);
-        renderManualConfigList();
-        updateManualStatus();
-        if (manualConfigs.length && originalBuffer) {
-          await applyManualStack();
-        } else {
-          clearConfigFromUrl();
-          // Last pair removed: go back to the plain, unstacked structure.
-          if (originalBuffer) await renderStructure(parseOriginal());
-        }
-      });
-    });
   }
 
-  // Refreshes everything in the manual panel that depends on the current
-  // selection / pending Step & Cap / saved pairs: the selected-region line,
-  // the Set buttons (panel and 3D HUD), the Step/Cap slots, the live pair
-  // check, the Save/Copy buttons, and the 3D highlights.
+  document.getElementById('manual-config-list').addEventListener('click', async e => {
+    const removeRegion = e.target.closest('.cluster-remove-region');
+    const removeCluster = e.target.closest('.cluster-remove');
+    const card = e.target.closest('.cluster-card');
+    if (removeRegion) {
+      const c = clusters[parseInt(removeRegion.dataset.cluster, 10)];
+      if (c) c.regions = c.regions.filter(r => r.name !== removeRegion.dataset.name);
+      await clustersChanged();
+    } else if (removeCluster) {
+      const i = parseInt(removeCluster.dataset.cluster, 10);
+      clusters.splice(i, 1);
+      if (activeCluster >= i) activeCluster = Math.max(0, activeCluster - 1);
+      await clustersChanged();
+    } else if (card) {
+      activeCluster = parseInt(card.dataset.cluster, 10);
+      renderClusterList();
+      updateManualStatus();
+    }
+  });
+
+  // Refreshes everything in the panel that depends on the selection or the
+  // clusters: the selected-region line, the add buttons (panel and 3D HUD),
+  // which cluster they add to, the Copy button and the 3D highlights.
   function updateManualStatus() {
     const sel = selectedRegionName;
     document.getElementById('manual-selected-name').textContent = sel || 'click a region in the 3D view';
     document.getElementById('manual-selected').classList.toggle('empty', !sel);
-    for (const id of ['manual-set-step', 'manual-set-cap', 'hud-set-step', 'hud-set-cap']) {
+
+    const target = clusterName(clusters.length ? activeCluster : 0);
+    document.getElementById('cluster-add-label').textContent =
+      clusters.length ? `Add to cluster ${target} as` : 'Add to a new cluster A as';
+    document.getElementById('hud-cluster-label').textContent = `→ ${target}`;
+    for (const id of ['add-as-region', 'add-as-step', 'add-as-cap', 'hud-add-region', 'hud-add-step', 'hud-add-cap']) {
       document.getElementById(id).disabled = !sel;
     }
 
-    const slots = [
-      ['step', manualCurrentStep, 'not set'],
-      ['cap', manualCurrentCap, 'not set'],
-    ];
-    for (const [role, name, placeholder] of slots) {
-      document.getElementById(`manual-${role}-label`).textContent = name || placeholder;
-      document.getElementById(`slot-${role}`).classList.toggle('filled', !!name);
-      document.getElementById(`manual-clear-${role}`).style.visibility = name ? 'visible' : 'hidden';
-    }
-
-    const check = checkPair(manualCurrentStep, manualCurrentCap);
-    const checkEl = document.getElementById('manual-pair-check');
-    checkEl.className = 'pair-check' + (check ? ` ${check.kind}` : '');
-    checkEl.textContent = check ? ({ ok: '✓ ', warn: '⚠ ', error: '✗ ' }[check.kind] + check.msg) : '';
-    checkEl.style.display = check ? '' : 'none';
-
-    document.getElementById('manual-save-config').disabled = !check || check.kind === 'error';
-
     const copyBtn = document.getElementById('manual-copy-link');
-    copyBtn.disabled = !manualConfigs.length;
-    copyBtn.title = 'Copy the encoded stacking config (Step/Cap pairs + stack count)';
+    copyBtn.disabled = !clusters.length;
+    copyBtn.title = 'Copy the encoded stacking config (clusters, cycles and cluster gap)';
 
     rebuildMarkerMeshes();
   }
 
-  // Runs manualStackMulti() with either the given list of pairs (used when
-  // restoring from a shared URL) or the currently-saved list, then renders
-  // the result. Per-pair stack counts
-  // are always re-derived from the LCM logic (see resolveManualCycleCounts),
-  // scaled by the shared Stack Count field as a cycle multiplier — never
-  // read from a per-pair value.
-  async function applyManualStack(pairsOverride) {
-    if (!originalBuffer) { alert('Load a litematic first.'); return; }
-
-    const pairs = pairsOverride ?? manualConfigs;
-    if (!pairs || pairs.length === 0) {
-      alert('Save at least one Step/Cap pair first.');
-      return;
-    }
+  // Stacks the original structure with the current clusters, cycles and
+  // cluster gap (see planClusters / stackClusters) and renders the result.
+  async function applyManualStack() {
+    if (!originalBuffer) return;
+    const plans = currentPlans();
+    if (!plans?.some(p => p.ok)) return;
 
     progressDisplay.style.display = 'block';
-    progressDisplay.textContent = 'Applying manual stack...';
+    progressDisplay.textContent = 'Stacking clusters...';
 
-    const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
-    const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-
-    let resolvedConfigs, result;
+    let result;
     try {
-      resolvedConfigs = resolveManualCycleCounts(nbt, pairs, cycles);
-      result = manualStackMulti(nbt, resolvedConfigs);
+      result = stackClusters(parseOriginal(), plans);
     } catch (err) {
       console.error(err);
       progressDisplay.style.display = 'none';
       document.getElementById('manual-status').textContent = err.message;
-      alert(err.message);
       return;
     }
 
-    // Per-pair details (axis, copies, stride) are shown on each saved-pair
-    // card; this line is only for errors and edit warnings.
+    // Per-cluster details are on each card; this line is for edit warnings.
     document.getElementById('manual-status').textContent = hasUnsavedRegionEdits
       ? 'Heads up: stacking uses the layout from the last save, not your unsaved edits.'
       : '';
 
-    renderManualConfigList();
+    renderClusterList();
     syncConfigToUrl();
 
     lastStackedNbt = result.nbt;
+    lastRoles = result.roles;
 
     const root = result.nbt.root || result.nbt;
     currentActiveRoot = root;
     const { w, h, d } = getEnclosing(root);
-    updateEnclosingSizeDisplay(w, h, d,
-      describeEditableAxes([...new Set(resolvedConfigs.map(c => c.axis))]));
+    updateEnclosingSizeDisplay(w, h, d, describeEditableAxes(plans));
 
     const builder = new StructureBuilder(w, h, d);
     await buildAndRender(builder, root.get("Regions"), w, h, d);
@@ -910,15 +947,13 @@ async function init() {
   // Copies the encoded stacking config (the same string used for the URL's
   // `config` parameter) to the clipboard.
   function copyManualStackingConfig() {
-    if (!manualConfigs.length) {
-      alert('Save at least one Step/Cap pair first.');
+    if (!clusters.length) {
+      alert('Make a cluster first.');
       return;
     }
 
     syncConfigToUrl();
-
-    const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-    const config = encodeManualConfig(manualConfigs, cycles);
+    const config = encodeStackConfig(clusters, readCycles(), readClusterGap());
 
     const copy = navigator.clipboard?.writeText(config) ?? Promise.reject();
     copy.then(() => {
@@ -949,18 +984,21 @@ async function init() {
   // when this returns false.
   async function restoreManualConfigFromUrl() {
     const configParam = new URLSearchParams(window.location.search).get('config');
-    const decoded = configParam ? decodeManualConfig(configParam) : null;
+    const decoded = configParam ? decodeStackConfig(configParam) : null;
     if (configParam && !decoded) {
       console.warn('Failed to parse manual stacking config from URL; showing the plain structure.');
     }
     placeSizeSectionAtTop(!!decoded);
     if (!decoded) return false;
 
-    manualConfigs = decoded.pairs;
+    clusters = decoded.clusters;
+    activeCluster = 0;
     document.getElementById('stack-count').value = decoded.cycles;
-    renderManualConfigList();
+    document.getElementById('cluster-gap').value = decoded.gap;
+    renderClusterList();
     updateManualStatus();
-    await applyManualStack(decoded.pairs);
+    if (!hasStackableCluster()) return false;
+    await applyManualStack();
     return true;
   }
 
@@ -969,10 +1007,9 @@ async function init() {
   // adding browser history entries. Called automatically every time a
   // manual stack is (re-)applied.
   function syncConfigToUrl() {
-    if (!manualConfigs.length) return;
+    if (!clusters.length) return;
 
-    const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-    const config = encodeManualConfig(manualConfigs, cycles);
+    const config = encodeStackConfig(clusters, readCycles(), readClusterGap());
 
     const url = new URL(window.location.href);
     url.searchParams.set('config', config);
@@ -1088,7 +1125,7 @@ async function init() {
         renderer.prepareDraw(view);
         currentRegionMeshes.forEach(({ mesh }) => renderer.drawMesh(mesh, { pos: true, color: true }));
       }
-      if (markerMeshes.length) {
+      if (showClusterHighlight && markerMeshes.length) {
         // Blue (Step) / orange (Cap) highlights for the pair being built.
         renderer.setShader(selectionShaderProgram);
         renderer.prepareDraw(view);
@@ -1309,58 +1346,40 @@ async function init() {
     moveSelectedRegion(axis === 'x' ? delta : 0, axis === 'y' ? delta : 0, axis === 'z' ? delta : 0);
   });
 
-  document.getElementById('stack-count').addEventListener('change', async () => {
-    renderManualConfigList();
-    if (manualConfigs.length && originalBuffer) await applyManualStack();
-  });
+  // Cycles and Cluster gap both re-stack with the current clusters.
+  const onStackSettingChange = async () => {
+    renderClusterList();
+    if (hasStackableCluster()) await applyManualStack();
+  };
+  document.getElementById('stack-count').addEventListener('change', onStackSettingChange);
+  document.getElementById('cluster-gap').addEventListener('change', onStackSettingChange);
 
-  // −/+ buttons next to number inputs (Cycles): data-step-target names
-  // the input, data-delta the amount.
+  // −/+ buttons next to number inputs (Cycles, Cluster gap): data-step-target
+  // names the input, data-delta the amount.
   document.querySelectorAll('[data-step-target]').forEach(btn => btn.addEventListener('click', () => {
     stepNumberInput(document.getElementById(btn.dataset.stepTarget), parseInt(btn.dataset.delta, 10));
     btn.blur();
   }));
 
-  // Step / Cap assignment: from the panel or the quick buttons in the 3D HUD.
-  function assignSelected(role) {
-    if (!selectedRegionName) return;
-    if (role === 'step') {
-      manualCurrentStep = selectedRegionName;
-      // Picking the same region for both slots can't be what was meant.
-      if (manualCurrentCap === selectedRegionName) manualCurrentCap = null;
-    } else {
-      manualCurrentCap = selectedRegionName;
-      if (manualCurrentStep === selectedRegionName) manualCurrentStep = null;
+  // Region / Step / Cap: add the selected region to the active cluster, from
+  // the panel or the quick buttons in the 3D HUD.
+  for (const role of ['region', 'step', 'cap']) {
+    for (const id of [`add-as-${role}`, `hud-add-${role}`]) {
+      document.getElementById(id).addEventListener('click', e => { e.currentTarget.blur(); addSelectedToCluster(role); });
     }
-    updateManualStatus();
   }
-  for (const [id, role] of [['manual-set-step', 'step'], ['hud-set-step', 'step'],
-                            ['manual-set-cap', 'cap'], ['hud-set-cap', 'cap']]) {
-    document.getElementById(id).addEventListener('click', e => { assignSelected(role); e.currentTarget.blur(); });
-  }
-  document.getElementById('manual-clear-step').addEventListener('click', () => { manualCurrentStep = null; updateManualStatus(); });
-  document.getElementById('manual-clear-cap').addEventListener('click', () => { manualCurrentCap = null; updateManualStatus(); });
-
-  document.getElementById('manual-save-config').addEventListener('click', async () => {
-    const check = checkPair(manualCurrentStep, manualCurrentCap);
-    if (!check || check.kind === 'error') return;
-    manualConfigs.push({ stepName: manualCurrentStep, capName: manualCurrentCap });
-    manualCurrentStep = null;
-    manualCurrentCap = null;
-    renderManualConfigList();
+  document.getElementById('add-cluster').addEventListener('click', e => {
+    e.currentTarget.blur();
+    clusters.push({ regions: [] });
+    activeCluster = clusters.length - 1;
+    renderClusterList();
     updateManualStatus();
-    if (originalBuffer) await applyManualStack();
   });
   document.getElementById('manual-clear-configs').addEventListener('click', async () => {
-    manualConfigs = [];
-    manualCurrentStep = null;
-    manualCurrentCap = null;
+    clusters = [];
+    activeCluster = 0;
     document.getElementById('manual-status').textContent = '';
-    renderManualConfigList();
-    updateManualStatus();
-    clearConfigFromUrl();
-    // Back to the plain structure (the stacked view no longer has any pairs).
-    if (originalBuffer) await renderStructure(parseOriginal());
+    await clustersChanged();
   });
   document.getElementById('manual-copy-link').addEventListener('click', () => copyManualStackingConfig());
   document.getElementById('save-region-edits').addEventListener('click', () => saveRegionEditsAsOriginal());
@@ -1423,9 +1442,9 @@ async function init() {
     markerMeshes = [];
     sizeEditable = [];
     updateSelectionHud(null);
-    manualCurrentStep = null;
-    manualCurrentCap = null;
-    manualConfigs = [];
+    clusters = [];
+    activeCluster = 0;
+    lastRoles = null;
     currentExtLink = null;
     currentActiveRoot = null;
     hasUnsavedRegionEdits = false;
@@ -1433,13 +1452,14 @@ async function init() {
     closeCloneGui();
     showRegionEditControls(false);
     placeSizeSectionAtTop(false);
-    renderManualConfigList();
+    renderClusterList();
     updateManualStatus();
     clearConfigFromUrl();
     document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
     document.getElementById('stack-count').value = 1;
+    document.getElementById('cluster-gap').value = 0;
     document.getElementById('version-controls').style.display = 'none';
     document.getElementById('version-override').value = '';
     document.getElementById('manual-status').textContent = '';
@@ -1490,6 +1510,11 @@ async function init() {
     currentCamera?.redraw(); // force re-render
   });
 
+  document.getElementById('toggle-cluster-highlight').addEventListener('change', (e) => {
+    showClusterHighlight = e.target.checked;
+    currentCamera?.redraw(); // force re-render
+  });
+
   document.getElementById('download-litematic').addEventListener('click', () => {
     // Stacking produces its own dedicated NbtFile in
     // lastStackedNbt — prefer that when present. Otherwise, fall back to
@@ -1513,8 +1538,8 @@ async function init() {
       return;
     }
 
-    const stackSize = document.getElementById('stack-count').value || 1;
-    downloadLitematic(nbtToDownload, `${base}_stack${stackSize}x.litematic`);
+    const gap = readClusterGap();
+    downloadLitematic(nbtToDownload, `${base}_stack${readCycles()}x${gap ? `_gap${gap}` : ''}.litematic`);
   });
 
   document.getElementById('file-input').addEventListener('change', async e => {

@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cluster Stacking Demo</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1d21; --muted: #646a75; --border: #d9dce2;
+    --grid: #eceef2; --grid-strong: #d4d8df;
+    --region: #e5484d; --region-fill: #f9c6c8;
+    --step: #2f9e44; --step-fill: #b8e6c1; --copy-fill: #d9f3de;
+    --cap: #1c7ed6; --cap-fill: #b9dcfb;
+    --loose: #7a808a; --loose-fill: #dfe2e6;
+    --cluster: #1b1d21; --warn: #b35c00; --warn-bg: #fff3e0; --accent: #1c7ed6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121418; --panel: #1b1e24; --text: #e8eaee; --muted: #9aa1ad; --border: #2e333c;
+      --grid: #20242b; --grid-strong: #2c313a;
+      --region-fill: #5a2023; --step-fill: #1f4a29; --copy-fill: #17331d; --cap-fill: #173b5c;
+      --loose-fill: #343840; --cluster: #e8eaee; --warn: #ffb35c; --warn-bg: #3a2a14;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121418; --panel: #1b1e24; --text: #e8eaee; --muted: #9aa1ad; --border: #2e333c;
+    --grid: #20242b; --grid-strong: #2c313a;
+    --region-fill: #5a2023; --step-fill: #1f4a29; --copy-fill: #17331d; --cap-fill: #173b5c;
+    --loose-fill: #343840; --cluster: #e8eaee; --warn: #ffb35c; --warn-bg: #3a2a14;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .bar label { display: flex; align-items: center; gap: 6px; }
+  select, input, button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .views { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-width: 0; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0; color: var(--muted); font-size: 13px; }
+  .sw { display: inline-block; width: 14px; height: 14px; border: 2px solid; border-radius: 3px; vertical-align: -2px; margin-right: 5px; }
+  .cols { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; margin-top: 12px; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px; }
+  td { padding: 2px 4px; }
+  td input { width: 52px; padding: 3px 5px; }
+  td input.name { width: 110px; }
+  td input.cl { width: 44px; text-transform: uppercase; }
+  .explain p { margin: 4px 0; }
+  .explain .cl { font-weight: 600; }
+  .warn { color: var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 6px 8px; margin: 6px 0; font-size: 13px; }
+  .err { color: var(--region); }
+  .muted { color: var(--muted); }
+  code { font-size: 12px; }
+  .rule { font-size: 13px; color: var(--muted); border-left: 3px solid var(--border); padding-left: 10px; margin: 8px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Cluster stacking: logic check</h1>
+  <p class="sub">Top-down 2D (X → right, Z ↓ down). Each cluster: <b>Region</b> stays, <b>Steps</b> repeat, <b>Cap</b> moves to the end. Clusters past another cluster's steps get pushed.</p>
+
+  <div class="bar">
+    <label>Scenario
+      <select id="preset"></select>
+    </label>
+    <label>Cycles
+      <button type="button" data-d="-1">−</button>
+      <input id="cycles" type="number" min="1" value="1" style="width:56px">
+      <button type="button" data-d="1">+</button>
+    </label>
+    <label title="Extra blocks between clusters, sideways to the direction they grow">Cluster gap
+      <button type="button" data-g="-1">−</button>
+      <input id="gap" type="number" min="0" value="0" style="width:56px">
+      <button type="button" data-g="1">+</button>
+    </label>
+    <span class="muted" id="preset-note"></span>
+  </div>
+
+  <div class="views">
+    <div class="card"><h2>Before</h2><svg id="before"></svg></div>
+    <div class="card"><h2>After</h2><svg id="after"></svg></div>
+  </div>
+
+  <div class="legend">
+    <span><span class="sw" style="border-color:var(--region);background:var(--region-fill)"></span>Region (stays)</span>
+    <span><span class="sw" style="border-color:var(--step);background:var(--step-fill)"></span>Step</span>
+    <span><span class="sw" style="border-color:var(--step);background:var(--copy-fill);border-style:dashed"></span>Step copy</span>
+    <span><span class="sw" style="border-color:var(--cap);background:var(--cap-fill)"></span>Cap</span>
+    <span><span class="sw" style="border-color:var(--loose);background:var(--loose-fill)"></span>Not in a cluster</span>
+    <span><span class="sw" style="border-color:var(--cluster);background:transparent"></span>Cluster</span>
+  </div>
+
+  <div class="cols">
+    <div class="card">
+      <h2>Regions (edit to test)</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Cluster</th><th>Role</th><th>X</th><th>Z</th><th>W</th><th>D</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p><button type="button" id="add">＋ Add region</button>
+        <span class="muted">Leave Cluster empty for a region that isn't in any cluster.</span></p>
+    </div>
+    <div class="card explain">
+      <h2>What happened</h2>
+      <div id="explain"></div>
+      <div class="rule">
+        <b>Rules</b><br>
+        1. Direction: from the Steps toward the Cap (Region must be on the other side).<br>
+        2. Step block length = stride. Clusters on the same axis use LCM of strides so caps stay aligned; copies = LCM/stride × cycles.<br>
+        3. Growth = (copies − 1) × stride.<br>
+        4. Something is pushed by cluster A when it sits entirely past A's steps (for a cluster: its Region + Steps).<br>
+        5. Shift = max over pushers of (pusher's shift + pusher's growth), per direction — side-by-side clusters don't add up.<br>
+        6. Cluster gap: anything beside a cluster and entirely past it sideways (perpendicular to its growth, toward +) is pushed by the gap; same max rule, so row 3 moves 2 × gap. Growth and gap shifts add together.
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ── Scenarios ────────────────────────────────────────────────────────────────
+const R = (name, cluster, role, x, z, w, d) => ({ name, cluster, role, x, z, w, d });
+const PRESETS = {
+  single: {
+    label: '1 · Single cluster (like the picture)',
+    note: 'Grows up (−Z): Region at the bottom, Cap at the top.',
+    regions: [
+      R('region', 'A', 'region', 0, 10, 6, 2),
+      R('step', 'A', 'step', 0, 8, 6, 2),
+      R('cap', 'A', 'cap', 0, 6, 6, 2),
+    ],
+  },
+  sandwich: {
+    label: '2 · Sandwiched clusters (different step sizes + air gap)',
+    note: 'A step = 2, B step = 3 → LCM 6. B has a 1-block gap before its Cap. "tail" sits past both.',
+    regions: [
+      R('A-region', 'A', 'region', 0, 0, 3, 3),
+      R('A-step', 'A', 'step', 3, 0, 2, 3),
+      R('A-cap', 'A', 'cap', 5, 0, 2, 3),
+      R('B-region', 'B', 'region', 0, 3, 3, 3),
+      R('B-step', 'B', 'step', 3, 3, 3, 3),
+      R('B-cap', 'B', 'cap', 7, 3, 2, 3),
+      R('tail', '', 'region', 10, 1, 2, 4),
+    ],
+  },
+  chain: {
+    label: '3 · Chain (a cluster past another cluster)',
+    note: 'A grows +X and pushes B. B grows +Z and pushes "lamp". "tower" is past A only.',
+    regions: [
+      R('A-region', 'A', 'region', 0, 0, 2, 4),
+      R('A-step', 'A', 'step', 2, 0, 3, 4),
+      R('A-cap', 'A', 'cap', 5, 0, 2, 4),
+      R('B-region', 'B', 'region', 8, 0, 3, 2),
+      R('B-step', 'B', 'step', 8, 2, 3, 2),
+      R('B-cap', 'B', 'cap', 8, 4, 3, 2),
+      R('tower', '', 'region', 12, 0, 2, 2),
+      R('lamp', '', 'region', 8, 7, 3, 1),
+    ],
+  },
+  twoSided: {
+    label: '4 · Two sides (grows left and right)',
+    note: 'Engine in the middle stays; L grows −X, R grows +X.',
+    regions: [
+      R('engine', '', 'region', 6, 0, 4, 3),
+      R('L-step', 'L', 'step', 4, 0, 2, 3),
+      R('L-cap', 'L', 'cap', 2, 0, 2, 3),
+      R('R-step', 'R', 'step', 10, 0, 2, 3),
+      R('R-cap', 'R', 'cap', 12, 0, 2, 3),
+      R('deco', '', 'region', 15, 1, 1, 1),
+    ],
+  },
+  rows: {
+    label: '6 · Three rows + cluster gap',
+    note: 'Three clusters side by side growing +X. Try Cluster gap: B moves 1×gap, C 2×gap, "side" follows C.',
+    regions: [
+      R('A-region', 'A', 'region', 0, 0, 3, 2),
+      R('A-step', 'A', 'step', 3, 0, 2, 2),
+      R('A-cap', 'A', 'cap', 5, 0, 2, 2),
+      R('B-region', 'B', 'region', 0, 2, 3, 2),
+      R('B-step', 'B', 'step', 3, 2, 2, 2),
+      R('B-cap', 'B', 'cap', 5, 2, 2, 2),
+      R('C-region', 'C', 'region', 0, 4, 3, 2),
+      R('C-step', 'C', 'step', 3, 4, 2, 2),
+      R('C-cap', 'C', 'cap', 5, 4, 2, 2),
+      R('side', '', 'region', 0, 6, 7, 1),
+    ],
+  },
+  crossing: {
+    label: '5 · Region crossing the steps (warning)',
+    note: '"beam" starts over the steps and ends past them, so it would be torn apart.',
+    regions: [
+      R('A-region', 'A', 'region', 0, 0, 2, 3),
+      R('A-step', 'A', 'step', 2, 0, 3, 3),
+      R('A-cap', 'A', 'cap', 5, 0, 2, 3),
+      R('beam', '', 'region', 3, 3, 5, 1),
+      R('floor', '', 'region', 0, 3, 2, 1),
+    ],
+  },
+};
+
+let regions = [];
+let cycles = 1;
+let clusterGap = 0;
+
+// ── Geometry helpers ─────────────────────────────────────────────────────────
+const span = (r, ax) => (ax === 'x' ? [r.x, r.x + r.w - 1] : [r.z, r.z + r.d - 1]);
+const overlap = (a, b) => a[0] <= b[1] && b[0] <= a[1];
+const other = ax => (ax === 'x' ? 'z' : 'x');
+function union(list) {
+  const x0 = Math.min(...list.map(r => r.x)), z0 = Math.min(...list.map(r => r.z));
+  const x1 = Math.max(...list.map(r => r.x + r.w)), z1 = Math.max(...list.map(r => r.z + r.d));
+  return { x: x0, z: z0, w: x1 - x0, d: z1 - z0 };
+}
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+const lcm = (a, b) => (a / gcd(a, b)) * b;
+const dirName = (ax, dir) => (dir > 0 ? '+' : '−') + ax.toUpperCase();
+
+// ── The logic being checked ──────────────────────────────────────────────────
+function compute(regions, cycles, clusterGap = 0) {
+  const warnings = [];
+  const groups = new Map();
+  const loose = [];
+  for (const r of regions) {
+    const key = (r.cluster || '').trim().toUpperCase();
+    if (key) (groups.get(key) ?? groups.set(key, []).get(key)).push(r);
+    else loose.push(r);
+  }
+
+  // 1. Per cluster: direction, stride.
+  const clusters = [];
+  for (const [name, list] of groups) {
+    const steps = list.filter(r => r.role === 'step');
+    const caps = list.filter(r => r.role === 'cap');
+    const bases = list.filter(r => r.role === 'region');
+    const c = { name, list, steps, caps, bases, ok: false };
+    clusters.push(c);
+    if (!steps.length || !caps.length) { c.error = 'needs at least one Step and one Cap'; continue; }
+
+    const sb = union(steps), cb = union(caps);
+    let det = null;
+    for (const ax of ['x', 'z']) {
+      if (!overlap(span(sb, other(ax)), span(cb, other(ax)))) continue;
+      const [s0, s1] = span(sb, ax), [c0, c1] = span(cb, ax);
+      if (c0 > s1) det = { axis: ax, dir: 1, gap: c0 - s1 - 1 };
+      else if (c1 < s0) det = { axis: ax, dir: -1, gap: s0 - c1 - 1 };
+      if (det) break;
+    }
+    if (!det) { c.error = 'the Cap must sit past the Steps along X or Z, lined up on the other axis'; continue; }
+
+    const [s0, s1] = span(sb, det.axis);
+    if (bases.length) {
+      const [b0, b1] = span(union(bases), det.axis);
+      const fixedSide = det.dir > 0 ? b1 < s0 : b0 > s1;
+      if (!fixedSide) warnings.push(`Cluster ${name}: its Region isn't on the opposite side of the Steps from the Cap.`);
+    }
+    Object.assign(c, det, { ok: true, stepBox: sb, s0, s1, stride: s1 - s0 + 1, anchor: union([...bases, ...steps]) });
+  }
+
+  // 2. LCM per axis → copies and growth.
+  const L = {};
+  for (const c of clusters.filter(c => c.ok)) L[c.axis] = L[c.axis] ? lcm(L[c.axis], c.stride) : c.stride;
+  for (const c of clusters.filter(c => c.ok)) {
+    c.count = (L[c.axis] / c.stride) * cycles;
+    c.growth = (c.count - 1) * c.stride;
+  }
+
+  // 3. Things that can be pushed: clusters (by their Region+Steps) and loose regions.
+  //    Clusters with an error are treated like loose regions.
+  const ok = clusters.filter(c => c.ok);
+  const ents = [
+    ...ok.map(c => ({ kind: 'cluster', c, name: c.name, box: c.anchor })),
+    ...loose.map(r => ({ kind: 'region', r, name: r.name, box: r })),
+    ...clusters.filter(c => !c.ok).flatMap(c => c.list.map(r => ({ kind: 'region', r, name: r.name, box: r, broken: c.name }))),
+  ];
+  ents.forEach(e => { e.shift = {}; e.why = {}; e.pushers = []; e.gapPushers = []; e.full = e.kind === 'cluster' ? union(e.c.list) : e.box; });
+
+  for (const e of ents) {
+    for (const A of ok) {
+      if (e.kind === 'cluster' && e.c === A) continue;
+
+      // Cluster gap: beside A (overlapping it along A's growth axis) and
+      // entirely past it sideways (toward +), using whole boxes.
+      const side = other(A.axis), aBox = union(A.list);
+      if (overlap(span(e.full, A.axis), span(aBox, A.axis)) &&
+          span(e.full, side)[0] > span(aBox, side)[1]) e.gapPushers.push(A);
+
+      const [b0, b1] = span(e.box, A.axis);
+      const past = A.dir > 0 ? b0 > A.s1 : b1 < A.s0;
+      if (past) { e.pushers.push(A); continue; }
+      if (e.kind === 'region') {
+        const crosses = A.dir > 0 ? (b0 <= A.s1 && b1 > A.s1) : (b1 >= A.s0 && b0 < A.s0);
+        if (crosses) warnings.push(`"${e.name}" crosses the end of cluster ${A.name}'s steps along ${A.axis.toUpperCase()}: it can't stay attached to both sides. Split it, or add it to a cluster.`);
+      }
+    }
+  }
+
+  // 4. Shift = max over pushers of (pusher shift + amount), per kind of push.
+  //    Keys: "+X" / "−Z" … for growth, "gap +Z" … for cluster gap. Different
+  //    keys add up; the same key takes the max.
+  const entOf = c => ents.find(e => e.kind === 'cluster' && e.c === c);
+  const relax = (e, A, key, amount) => {
+    const val = (entOf(A).shift[key] || 0) + amount;
+    if (val > (e.shift[key] || 0)) { e.shift[key] = val; e.why[key] = A.name; return true; }
+    return false;
+  };
+  for (let i = 0; i <= ents.length * 2; i++) {
+    let changed = false;
+    for (const e of ents) {
+      for (const A of e.pushers) changed = relax(e, A, dirName(A.axis, A.dir), A.growth) || changed;
+      if (clusterGap > 0) {
+        for (const A of e.gapPushers) changed = relax(e, A, 'gap ' + dirName(other(A.axis), 1), clusterGap) || changed;
+      }
+    }
+    if (!changed) break;
+  }
+  for (const e of ents) {
+    e.vec = { x: 0, z: 0 };
+    for (const [key, val] of Object.entries(e.shift)) {
+      const d = key.replace('gap ', '');
+      e.vec[d[1].toLowerCase()] += (d[0] === '+' ? 1 : -1) * val;
+    }
+  }
+
+  // 5. Build before/after rectangles.
+  const before = [], after = [], outlinesBefore = [], outlinesAfter = [];
+  const move = (r, dx, dz, extra = {}) => ({ ...r, x: r.x + dx, z: r.z + dz, ...extra });
+  for (const e of ents) {
+    if (e.kind === 'region') {
+      before.push({ ...e.r, kind: 'loose' });
+      after.push(move(e.r, e.vec.x, e.vec.z, { kind: 'loose', from: e.r }));
+      continue;
+    }
+    const c = e.c, { x: sx, z: sz } = e.vec;
+    const along = k => (c.axis === 'x' ? [k * c.dir, 0] : [0, k * c.dir]);
+    const out = [];
+    for (const r of c.bases) out.push(move(r, sx, sz, { kind: 'region', from: r }));
+    for (const r of c.steps) {
+      for (let k = 0; k < c.count; k++) {
+        const [ax, az] = along(k * c.stride);
+        out.push(move(r, sx + ax, sz + az, { kind: k ? 'copy' : 'step', name: k ? `${r.name}_${k}` : r.name, from: r }));
+      }
+    }
+    const [cx, cz] = along(c.growth);
+    for (const r of c.caps) out.push(move(r, sx + cx, sz + cz, { kind: 'cap', from: r }));
+    c.list.forEach(r => before.push({ ...r, kind: r.role === 'region' ? 'region' : r.role }));
+    after.push(...out);
+    outlinesBefore.push({ ...union(c.list), name: c.name });
+    outlinesAfter.push({ ...union(out), name: c.name });
+  }
+
+  return { clusters, ents, warnings, before, after, outlinesBefore, outlinesAfter };
+}
+
+// ── Drawing ──────────────────────────────────────────────────────────────────
+const NS = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs, parent) => {
+  const n = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  parent?.appendChild(n);
+  return n;
+};
+const STYLE = {
+  region: ['var(--region)', 'var(--region-fill)'],
+  step: ['var(--step)', 'var(--step-fill)'],
+  copy: ['var(--step)', 'var(--copy-fill)'],
+  cap: ['var(--cap)', 'var(--cap-fill)'],
+  loose: ['var(--loose)', 'var(--loose-fill)'],
+};
+
+function draw(svg, rects, outlines, bounds) {
+  svg.innerHTML = '';
+  const pad = 2;
+  const vx = bounds.x - pad, vz = bounds.z - pad, vw = bounds.w + pad * 2, vh = bounds.d + pad * 2;
+  svg.setAttribute('viewBox', `${vx} ${vz} ${vw} ${vh}`);
+
+  // grid + coordinate ticks
+  for (let x = Math.floor(vx); x <= vx + vw; x++) {
+    el('line', { x1: x, y1: vz, x2: x, y2: vz + vh, stroke: x % 5 ? 'var(--grid)' : 'var(--grid-strong)', 'stroke-width': 0.05 }, svg);
+    if (x % 5 === 0) el('text', { x: x + 0.1, y: vz + 0.7, 'font-size': 0.6, fill: 'var(--muted)' }, svg).textContent = x;
+  }
+  for (let z = Math.floor(vz); z <= vz + vh; z++) {
+    el('line', { x1: vx, y1: z, x2: vx + vw, y2: z, stroke: z % 5 ? 'var(--grid)' : 'var(--grid-strong)', 'stroke-width': 0.05 }, svg);
+    if (z % 5 === 0) el('text', { x: vx + 0.1, y: z - 0.15, 'font-size': 0.6, fill: 'var(--muted)' }, svg).textContent = z;
+  }
+
+  for (const r of rects) {
+    const [stroke, fill] = STYLE[r.kind];
+    const g = el('g', {}, svg);
+    el('rect', {
+      x: r.x + 0.06, y: r.z + 0.06, width: r.w - 0.12, height: r.d - 0.12, rx: 0.15,
+      fill, stroke, 'stroke-width': 0.12, ...(r.kind === 'copy' ? { 'stroke-dasharray': '0.35 0.2' } : {}),
+    }, g);
+    const t = el('title', {}, g);
+    t.textContent = `${r.name}  x=${r.x} z=${r.z}  ${r.w}×${r.d}` + (r.from && (r.from.x !== r.x || r.from.z !== r.z) ? `  (was x=${r.from.x} z=${r.from.z})` : '');
+    const size = Math.min(0.55, (r.w * 0.95) / Math.max(4, r.name.length * 0.55));
+    el('text', {
+      x: r.x + r.w / 2, y: r.z + r.d / 2 + size * 0.35, 'font-size': size, 'text-anchor': 'middle', fill: 'var(--text)',
+    }, g).textContent = r.name;
+  }
+
+  for (const o of outlines) {
+    el('rect', { x: o.x - 0.25, y: o.z - 0.25, width: o.w + 0.5, height: o.d + 0.5, fill: 'none', stroke: 'var(--cluster)', 'stroke-width': 0.1, rx: 0.2 }, svg);
+    el('text', { x: o.x - 0.25, y: o.z - 0.45, 'font-size': 0.7, 'font-weight': 700, fill: 'var(--cluster)' }, svg).textContent = o.name;
+  }
+}
+
+// ── UI ───────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+function renderTable() {
+  $('rows').innerHTML = regions.map((r, i) => `
+    <tr>
+      <td><input class="name" data-i="${i}" data-k="name" value="${esc(r.name)}"></td>
+      <td><input class="cl" data-i="${i}" data-k="cluster" value="${esc(r.cluster)}"></td>
+      <td><select data-i="${i}" data-k="role" ${r.cluster ? '' : 'disabled'}>
+        ${['region', 'step', 'cap'].map(o => `<option ${o === r.role ? 'selected' : ''}>${o}</option>`).join('')}
+      </select></td>
+      ${['x', 'z', 'w', 'd'].map(k => `<td><input type="number" data-i="${i}" data-k="${k}" value="${r[k]}" ${k === 'w' || k === 'd' ? 'min="1"' : ''}></td>`).join('')}
+      <td><button type="button" data-del="${i}" title="Remove">✕</button></td>
+    </tr>`).join('');
+}
+
+function update() {
+  const res = compute(regions, cycles, clusterGap);
+  const all = [...res.before, ...res.after, ...res.outlinesAfter];
+  const bounds = all.length ? union(all) : { x: 0, z: 0, w: 10, d: 10 };
+  draw($('before'), res.before, res.outlinesBefore, bounds);
+  draw($('after'), res.after, res.outlinesAfter, bounds);
+
+  const lines = [];
+  for (const c of res.clusters) {
+    if (!c.ok) { lines.push(`<p><span class="cl">Cluster ${esc(c.name)}</span> <span class="err">— ${esc(c.error)}</span></p>`); continue; }
+    const e = res.ents.find(x => x.kind === 'cluster' && x.c === c);
+    lines.push(`<p><span class="cl">Cluster ${esc(c.name)}</span>: grows <b>${dirName(c.axis, c.dir)}</b> · stride ${c.stride} · ×${c.count} copies · growth +${c.growth}` +
+      (c.gap ? ` · ${c.gap}-block gap kept before the Cap` : '') + pushText(e) + '</p>');
+  }
+  for (const e of res.ents.filter(e => e.kind === 'region')) {
+    lines.push(`<p><span class="cl">${esc(e.name)}</span> <span class="muted">(no cluster${e.broken ? `, cluster ${esc(e.broken)} has an error` : ''})</span>${pushText(e) || ' · stays'}</p>`);
+  }
+  lines.push(...res.warnings.map(w => `<div class="warn">⚠ ${esc(w)}</div>`));
+  $('explain').innerHTML = lines.join('');
+}
+
+function pushText(e) {
+  const parts = Object.entries(e.shift).map(([key, val]) => key.startsWith('gap ')
+    ? `${val} along ${key.slice(4)} (cluster gap, after ${e.why[key]})`
+    : `${val} along ${key} (growth of ${e.why[key]})`);
+  return parts.length ? ` · <b>pushed</b> ${parts.join(', ')} → moved (${e.vec.x}, ${e.vec.z})` : '';
+}
+
+function loadPreset(key) {
+  regions = structuredClone(PRESETS[key].regions);
+  $('preset-note').textContent = PRESETS[key].note;
+  renderTable();
+  update();
+}
+
+$('preset').innerHTML = Object.entries(PRESETS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('');
+$('preset').addEventListener('change', e => loadPreset(e.target.value));
+
+$('cycles').addEventListener('input', e => { cycles = Math.max(1, parseInt(e.target.value, 10) || 1); update(); });
+document.querySelectorAll('[data-d]').forEach(b => b.addEventListener('click', () => {
+  cycles = Math.max(1, cycles + parseInt(b.dataset.d, 10));
+  $('cycles').value = cycles;
+  update();
+}));
+
+$('gap').addEventListener('input', e => { clusterGap = Math.max(0, parseInt(e.target.value, 10) || 0); update(); });
+document.querySelectorAll('[data-g]').forEach(b => b.addEventListener('click', () => {
+  clusterGap = Math.max(0, clusterGap + parseInt(b.dataset.g, 10));
+  $('gap').value = clusterGap;
+  update();
+}));
+
+$('rows').addEventListener('input', e => {
+  const i = e.target.dataset.i, k = e.target.dataset.k;
+  if (i == null) return;
+  const r = regions[i];
+  if (['x', 'z', 'w', 'd'].includes(k)) {
+    const n = parseInt(e.target.value, 10);
+    if (Number.isNaN(n)) return;
+    r[k] = k === 'w' || k === 'd' ? Math.max(1, n) : n;
+  } else {
+    r[k] = e.target.value;
+    if (k === 'cluster') e.target.closest('tr').querySelector('select').disabled = !r.cluster.trim();
+  }
+  update();
+});
+$('rows').addEventListener('click', e => {
+  const i = e.target.dataset.del;
+  if (i == null) return;
+  regions.splice(i, 1);
+  renderTable();
+  update();
+});
+$('add').addEventListener('click', () => {
+  const b = regions.length ? union(regions) : { x: 0, z: 0, w: 0, d: 0 };
+  regions.push(R(`new${regions.length + 1}`, '', 'region', b.x + b.w + 1, b.z, 2, 2));
+  renderTable();
+  update();
+});
+
+loadPreset('single');
+</script>
+</body>
+</html>

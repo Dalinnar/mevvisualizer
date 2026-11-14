@@ -1,15 +1,31 @@
-// ── Manual Stacking ─────────────────────────────────────────────────────────
+// ── Cluster Stacking ─────────────────────────────────────────────────────────
 //
-// The user explicitly designates two regions:
-//   - Step: the region that gets duplicated `stackCount` times
-//   - Cap:  the fixed end region, which is never duplicated but is
-//           translated so it stays attached past the last generated Step copy
+// The user groups regions into clusters. Inside a cluster every region has
+// a role:
+//   - region: stays where it is (the fixed base of the cluster)
+//   - step:   repeated. All step regions together form one repeating block
+//   - cap:    moved to the end of the last step copy
 //
-// The stacking axis/direction is *not* chosen by the user — it's inferred
-// from how Step and Cap are actually adjacent to each other in the source
-// litematic (see detectManualStackAxis).
+// A cluster grows from its steps toward its cap. The axis/direction is
+// inferred from where the cap block sits compared with the step block (it
+// must be past it along one axis and line up on the other two; an air gap
+// between them is kept).
+//
+// Clusters move each other:
+//   - growth: a cluster whose Region+Steps sit entirely past another
+//     cluster's steps (along that cluster's growth direction) is pushed by
+//     that cluster's growth
+//   - cluster gap: a cluster beside another one (overlapping it along its
+//     growth axis and on the remaining axis) and entirely past it sideways
+//     (toward +) is pushed by the gap
+// A cluster's shift is the largest (pusher shift + amount) over all its
+// pushers, per kind of push, so clusters side by side don't add up; different
+// kinds add together. Regions that aren't in a cluster are never moved.
 
 import { nbtNum, localToWorld, deepCloneNbtCompound } from './validate.js';
+
+export const ROLES = ['region', 'step', 'cap'];
+const AXES = ['x', 'y', 'z'];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,7 +42,7 @@ function readVec3(entry, tag) {
 function cloneWithPosition(sourceEntry, newPos) {
   const cloned = deepCloneNbtCompound(sourceEntry);
   const pos = cloned.get("Position");
-  for (const axis of ['x', 'y', 'z']) {
+  for (const axis of AXES) {
     const node = pos.get(axis);
     node.value !== undefined ? (node.value = newPos[axis]) : pos.set(axis, newPos[axis]);
   }
@@ -36,10 +52,6 @@ function cloneWithPosition(sourceEntry, newPos) {
 function setVal(compound, key, val) {
   const node = compound.get(key);
   node.value !== undefined ? (node.value = val) : compound.set(key, val);
-}
-
-function boundsOverlap(aMin, aMax, bMin, bMax) {
-  return aMin <= bMax && bMin <= aMax;
 }
 
 function gcd(a, b) {
@@ -52,214 +64,210 @@ function lcm(a, b) {
   return Math.abs(a / gcd(a, b) * b);
 }
 
-// ── Direction detection ──────────────────────────────────────────────────────
-
-// Given the world-space Position/Size info (as returned by localToWorld) for
-// the Step and Cap regions, figures out which single axis they're adjacent
-// on (touching, with full overlap on the other two axes) and which side of
-// Step the Cap sits on.
-//
-// Returns { axis: 'x'|'y'|'z', direction: 1 | -1 } or null if the two
-// regions aren't cleanly adjacent along exactly one axis.
-//
-// `direction` is the sign, along `axis`, of the direction from Step toward
-// Cap. Growth always proceeds in this direction: additional Step copies are
-// inserted on the Cap side, pushing Cap further away.
-export function detectManualStackAxis(stepWorld, capWorld) {
-  const axes = ['x', 'y', 'z'];
-
-  for (const axis of axes) {
-    const others = axes.filter(a => a !== axis);
-    const overlapsOnOthers = others.every(a => {
-      const A = a.toUpperCase();
-      return boundsOverlap(
-        stepWorld.bounds[`min${A}`], stepWorld.bounds[`max${A}`],
-        capWorld.bounds[`min${A}`], capWorld.bounds[`max${A}`]
-      );
-    });
-    if (!overlapsOnOthers) continue;
-
-    const Ax = axis.toUpperCase();
-    const stepMin = stepWorld.bounds[`min${Ax}`], stepMax = stepWorld.bounds[`max${Ax}`];
-    const capMin = capWorld.bounds[`min${Ax}`], capMax = capWorld.bounds[`max${Ax}`];
-
-    // Cap sits immediately past Step's positive face along this axis.
-    if (capMin === stepMax + 1) return { axis, direction: 1 };
-    // Cap sits immediately before Step's negative face along this axis.
-    if (stepMin === capMax + 1) return { axis, direction: -1 };
+// Bounding box { min: {x,y,z}, max: {x,y,z} } (inclusive) of a list of
+// localToWorld results.
+function unionBox(worlds) {
+  const min = {}, max = {};
+  for (const a of AXES) {
+    const A = a.toUpperCase();
+    min[a] = Math.min(...worlds.map(w => w.bounds[`min${A}`]));
+    max[a] = Math.max(...worlds.map(w => w.bounds[`max${A}`]));
   }
-
-  return null;
+  return { min, max };
 }
 
-// ── Cycle-count resolution ───────────────────────────────────────────────────
+const overlaps = (a, b, axis) => a.min[axis] <= b.max[axis] && b.min[axis] <= a.max[axis];
+const dirKey = (axis, dir) => `${dir > 0 ? '+' : '−'}${axis.toUpperCase()}`;
 
-// Given a list of Step/Cap pairs (each { stepName, capName }, no stackCount
-// needed), figures out each pair's detected axis/direction/stride, then
-// groups pairs by axis and computes the LCM of their strides within that
-// group. Each pair's stackCount is set to (groupLCM / itsOwnStride) * cycles,
-// so pairs on the same axis but with differently-sized Step regions all
-// extend the same total distance — keeping their Caps evenly spaced the same
-// way the originals were, rather than drifting apart due to mismatched
-// stride sizes. `cycles` (default 1) scales every pair's count up further,
-// repeating the whole aligned pattern.
+// World-space info (localToWorld output) for every region, keyed by name.
+export function getRegionWorlds(nbt) {
+  const regions = (nbt.root || nbt).get("Regions");
+  const out = {};
+  for (const name of regions.keys()) {
+    const e = regions.get(name);
+    out[name] = localToWorld(readVec3(e, "Position"), readVec3(e, "Size"));
+  }
+  return out;
+}
+
+// ── Planning ─────────────────────────────────────────────────────────────────
+
+// Works out, for every cluster, how it grows and how far it gets pushed.
 //
-// Returns an array of { stepName, capName, stackCount, axis, direction,
-// stride } — ready to pass straight into manualStackMulti. Throws if any
-// pair can't be found or isn't adjacent along a single axis.
-export function resolveManualCycleCounts(nbt, pairs, cycles = 1) {
-  const root = nbt.root || nbt;
-  const regions = root.get("Regions");
+// `clusters` is an array of { regions: [{ name, role }] }.
+// Returns one plan per cluster (same order):
+//   ok:       false when the cluster can't be stacked (see `error`)
+//   axis/dir: growth direction, from the steps toward the cap
+//   capGap:   air between the step block and the cap block (kept)
+//   stride:   length of the step block along the axis
+//   count:    number of step copies (LCM of strides on the same axis / stride × cycles)
+//   growth:   (count − 1) × stride
+//   shift:    { x, y, z } the whole cluster is moved by
+//   pushedBy: { "<key>": { by: clusterIndex, amount } } for explaining moves
+//   gapSides: axes this cluster gets pushed along by the cluster gap (even
+//             when the gap is 0 — tells which axes the gap controls)
+//   warnings: strings
+export function planClusters(worlds, clusters, cycles = 1, clusterGap = 0) {
+  const safeCycles = Math.max(1, cycles);
+  const gap = Math.max(0, clusterGap);
 
-  const infos = pairs.map(({ stepName, capName }) => {
-    const stepEntry = regions.get(stepName);
-    const capEntry = regions.get(capName);
+  const plans = clusters.map((cluster, index) => {
+    const plan = { index, ok: false, warnings: [], shift: { x: 0, y: 0, z: 0 }, pushedBy: {} };
+    const byRole = role => cluster.regions.filter(r => r.role === role).map(r => r.name);
+    const missing = cluster.regions.map(r => r.name).filter(n => !worlds[n]);
+    if (missing.length) { plan.error = `region${missing.length > 1 ? 's' : ''} not found: ${missing.join(', ')}`; return plan; }
 
-    if (!stepEntry) throw new Error(`Step region "${stepName}" not found`);
-    if (!capEntry) throw new Error(`Cap region "${capName}" not found`);
-    if (stepName === capName) {
-      throw new Error(`Step and Cap must be different regions (got "${stepName}" twice)`);
+    const steps = byRole('step'), caps = byRole('cap'), bases = byRole('region');
+    if (!steps.length || !caps.length) { plan.error = 'needs at least one Step and one Cap'; return plan; }
+
+    const stepBox = unionBox(steps.map(n => worlds[n]));
+    const capBox = unionBox(caps.map(n => worlds[n]));
+
+    let det = null;
+    for (const axis of AXES) {
+      if (!AXES.filter(a => a !== axis).every(a => overlaps(stepBox, capBox, a))) continue;
+      if (capBox.min[axis] > stepBox.max[axis]) det = { axis, dir: 1, capGap: capBox.min[axis] - stepBox.max[axis] - 1 };
+      else if (capBox.max[axis] < stepBox.min[axis]) det = { axis, dir: -1, capGap: stepBox.min[axis] - capBox.max[axis] - 1 };
+      if (det) break;
+    }
+    if (!det) { plan.error = 'the Cap must sit past the Steps along one axis, lined up on the other two'; return plan; }
+
+    if (bases.length) {
+      const baseBox = unionBox(bases.map(n => worlds[n]));
+      const fixedSide = det.dir > 0 ? baseBox.max[det.axis] < stepBox.min[det.axis] : baseBox.min[det.axis] > stepBox.max[det.axis];
+      if (!fixedSide) plan.warnings.push('its Region isn\'t on the opposite side of the Steps from the Cap');
     }
 
-    const stepPos = readVec3(stepEntry, "Position");
-    const stepSize = readVec3(stepEntry, "Size");
-    const capPos = readVec3(capEntry, "Position");
-    const capSize = readVec3(capEntry, "Size");
-
-    const stepWorld = localToWorld(stepPos, stepSize);
-    const capWorld = localToWorld(capPos, capSize);
-
-    const detected = detectManualStackAxis(stepWorld, capWorld);
-    if (!detected) {
-      throw new Error(
-        `Could not determine a stacking direction for "${stepName}" / "${capName}": ` +
-        'they must be directly adjacent (touching, with full overlap on the other ' +
-        'two axes) along exactly one axis.'
-      );
-    }
-
-    return { stepName, capName, axis: detected.axis, direction: detected.direction, stride: stepWorld.size[detected.axis] };
+    Object.assign(plan, det, {
+      ok: true, steps, caps, bases, stepBox,
+      stride: stepBox.max[det.axis] - stepBox.min[det.axis] + 1,
+      anchor: unionBox([...bases, ...steps].map(n => worlds[n])),
+      full: unionBox(cluster.regions.map(r => worlds[r.name])),
+    });
+    return plan;
   });
 
-  // LCM of strides, grouped per axis (direction doesn't affect the length
-  // math, only which way it grows).
+  const ok = plans.filter(p => p.ok);
+
+  // Copies: clusters on the same axis share the LCM of their strides, so
+  // their step blocks end up the same total length.
   const lcmByAxis = {};
-  for (const info of infos) {
-    lcmByAxis[info.axis] = lcmByAxis[info.axis] ? lcm(lcmByAxis[info.axis], info.stride) : info.stride;
+  for (const p of ok) lcmByAxis[p.axis] = lcmByAxis[p.axis] ? lcm(lcmByAxis[p.axis], p.stride) : p.stride;
+  for (const p of ok) {
+    p.count = Math.max(1, Math.round((lcmByAxis[p.axis] / p.stride) * safeCycles));
+    p.growth = (p.count - 1) * p.stride;
   }
 
-  const safeCycles = Math.max(1, cycles);
+  // Who pushes whom.
+  for (const b of ok) {
+    b.growthPushers = [];
+    b.gapPushers = [];
+    for (const a of ok) {
+      if (a === b) continue;
 
-  return infos.map(info => ({
-    stepName: info.stepName,
-    capName: info.capName,
-    axis: info.axis,
-    direction: info.direction,
-    stride: info.stride,
-    stackCount: Math.max(1, Math.round((lcmByAxis[info.axis] / info.stride) * safeCycles)),
-  }));
+      const past = a.dir > 0
+        ? b.anchor.min[a.axis] > a.stepBox.max[a.axis]
+        : b.anchor.max[a.axis] < a.stepBox.min[a.axis];
+      if (past) b.growthPushers.push(a);
+
+      // Found even at gap 0, so callers know which axes the gap would affect.
+      if (overlaps(b.full, a.full, a.axis)) {
+        for (const side of AXES.filter(x => x !== a.axis)) {
+          const rest = AXES.find(x => x !== a.axis && x !== side);
+          if (overlaps(b.full, a.full, rest) && b.full.min[side] > a.full.max[side]) b.gapPushers.push({ a, side });
+        }
+      }
+    }
+  }
+
+  // Shift = max over pushers of (pusher shift + amount), per key.
+  const shifts = new Map(ok.map(p => [p, {}]));
+  const relax = (b, a, key, amount) => {
+    const val = (shifts.get(a)[key] || 0) + amount;
+    if (val > (shifts.get(b)[key] || 0)) {
+      shifts.get(b)[key] = val;
+      b.pushedBy[key] = { by: a.index, amount: val };
+      return true;
+    }
+    return false;
+  };
+  for (let i = 0; i <= ok.length * 2; i++) {
+    let changed = false;
+    for (const b of ok) {
+      for (const a of b.growthPushers) if (a.growth > 0) changed = relax(b, a, dirKey(a.axis, a.dir), a.growth) || changed;
+      if (gap > 0) {
+        for (const { a, side } of b.gapPushers) changed = relax(b, a, `gap ${dirKey(side, 1)}`, gap) || changed;
+      }
+    }
+    if (!changed) break;
+  }
+  for (const p of ok) {
+    for (const [key, val] of Object.entries(shifts.get(p))) {
+      const d = key.replace('gap ', '');
+      p.shift[d[1].toLowerCase()] += (d[0] === '+' ? 1 : -1) * val;
+    }
+    p.gapSides = [...new Set(p.gapPushers.map(g => g.side))];
+    delete p.growthPushers;
+    delete p.gapPushers;
+  }
+
+  return plans;
 }
 
-// ── Stacking ──────────────────────────────────────────────────────────────────
+// ── Stacking ─────────────────────────────────────────────────────────────────
 
-// Builds a manually-stacked structure from a list of independent Step/Cap
-// configurations. Mutates and returns `nbt` in place, so each call needs a
-// fresh parse of the original buffer.
+// Applies the plans from planClusters to `nbt` (mutated in place, so pass a
+// fresh parse). Regions of clusters that can't be stacked, and regions that
+// aren't in any cluster, are passed through unchanged.
 //
-// `configs` is an array of { stepName, capName, stackCount }. Each pair is
-// resolved independently against the *original* region layout — regions not
-// referenced by any config are passed through untouched, and regions
-// referenced by one config are unaffected by any other config.
-//
-// Returns { nbt, results } where `results` is a per-config array of
-// { stepName, capName, axis, direction, stride, count } describing what was
-// detected/applied, useful for status messages. Throws if any pair can't be
-// resolved or isn't adjacent along a single axis.
-export function manualStackMulti(nbt, configs) {
+// Returns { nbt, roles } where roles maps every placed region name (copies
+// included) to { cluster, role } — handy for highlighting.
+export function stackClusters(nbt, plans) {
   const root = nbt.root || nbt;
   const regions = root.get("Regions");
+  const names = new Set(regions.keys());
 
-  if (!configs || configs.length === 0) {
-    throw new Error('No manual stacking configurations to apply.');
-  }
-
-  const usedNames = new Set();
-  for (const { stepName, capName } of configs) {
-    if (stepName === capName) {
-      throw new Error(`Step and Cap must be different regions (got "${stepName}" twice)`);
-    }
-    usedNames.add(stepName);
-    usedNames.add(capName);
-  }
-
+  const handled = new Set(plans.filter(p => p.ok).flatMap(p => [...p.bases, ...p.steps, ...p.caps]));
   const newRegions = new Map();
+  const roles = {};
 
-  // Every region not referenced by any config is passed through completely
-  // unchanged.
-  for (const name of regions.keys()) {
-    if (usedNames.has(name)) continue;
-    newRegions.set(name, deepCloneNbtCompound(regions.get(name)));
+  for (const name of names) {
+    if (!handled.has(name)) newRegions.set(name, deepCloneNbtCompound(regions.get(name)));
   }
 
-  const results = [];
+  const uniqueName = base => {
+    let name = base, n = 2;
+    while (names.has(name) || newRegions.has(name)) name = `${base}~${n++}`;
+    return name;
+  };
+  const place = (name, src, offset, cluster, role) => {
+    const entry = regions.get(src);
+    const pos = readVec3(entry, "Position");
+    newRegions.set(name, cloneWithPosition(entry, { x: pos.x + offset.x, y: pos.y + offset.y, z: pos.z + offset.z }));
+    roles[name] = { cluster, role };
+  };
 
-  for (const { stepName, capName, stackCount } of configs) {
-    const stepEntry = regions.get(stepName);
-    const capEntry = regions.get(capName);
-
-    if (!stepEntry) throw new Error(`Step region "${stepName}" not found`);
-    if (!capEntry) throw new Error(`Cap region "${capName}" not found`);
-
-    const stepPos = readVec3(stepEntry, "Position");
-    const stepSize = readVec3(stepEntry, "Size");
-    const capPos = readVec3(capEntry, "Position");
-    const capSize = readVec3(capEntry, "Size");
-
-    const stepWorld = localToWorld(stepPos, stepSize);
-    const capWorld = localToWorld(capPos, capSize);
-
-    const detected = detectManualStackAxis(stepWorld, capWorld);
-    if (!detected) {
-      throw new Error(
-        `Could not determine a stacking direction for "${stepName}" / "${capName}": ` +
-        'they must be directly adjacent (touching, with full overlap on the other ' +
-        'two axes) along exactly one axis.'
-      );
+  for (const p of plans.filter(p => p.ok)) {
+    const along = k => ({ ...p.shift, [p.axis]: p.shift[p.axis] + k * p.dir });
+    for (const n of p.bases) place(n, n, p.shift, p.index, 'region');
+    for (const n of p.steps) {
+      for (let k = 0; k < p.count; k++) {
+        place(k === 0 ? n : uniqueName(`${n}_${k}`), n, along(k * p.stride), p.index, 'step');
+      }
     }
-    const { axis, direction } = detected;
-    const stride = stepWorld.size[axis];
-    const count = Math.max(1, stackCount);
-
-    // Step copies: copy 0 keeps the original position/name; each following
-    // copy is shifted further along `axis`, toward where Cap currently sits.
-    for (let i = 0; i < count; i++) {
-      const shift = i * stride * direction;
-      const newPos = { ...stepPos, [axis]: stepPos[axis] + shift };
-      const name = i === 0 ? stepName : `${stepName}_${i}`;
-      newRegions.set(name, cloneWithPosition(stepEntry, newPos));
-    }
-
-    // Cap: never duplicated — just translated so it remains attached past
-    // the last generated Step copy for *this* pair.
-    const capShift = (count - 1) * stride * direction;
-    const newCapPos = { ...capPos, [axis]: capPos[axis] + capShift };
-    newRegions.set(capName, cloneWithPosition(capEntry, newCapPos));
-
-    results.push({ stepName, capName, axis, direction, stride, count });
+    for (const n of p.caps) place(n, n, along(p.growth), p.index, 'cap');
   }
 
   // ── Patch EnclosingSize from the actual bounding box of every region ──────
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
   let minZ = Infinity, maxZ = -Infinity;
-
   for (const region of newRegions.values()) {
     const { bounds: b } = localToWorld(readVec3(region, "Position"), readVec3(region, "Size"));
     minX = Math.min(minX, b.minX); maxX = Math.max(maxX, b.maxX);
     minY = Math.min(minY, b.minY); maxY = Math.max(maxY, b.maxY);
     minZ = Math.min(minZ, b.minZ); maxZ = Math.max(maxZ, b.maxZ);
   }
-
   const enclosing = root.get("Metadata").get("EnclosingSize");
   setVal(enclosing, 'x', maxX - minX + 1);
   setVal(enclosing, 'y', maxY - minY + 1);
@@ -267,28 +275,32 @@ export function manualStackMulti(nbt, configs) {
 
   // ── Write back ─────────────────────────────────────────────────────────────
   const regionsCompound = new deepslate.NbtCompound();
-  for (const [name, region] of newRegions) {
-    regionsCompound.set(name, region);
-  }
+  for (const [name, region] of newRegions) regionsCompound.set(name, region);
   root.set("Regions", regionsCompound);
 
-  return { nbt, results };
+  return { nbt, roles };
 }
 
-// ── Shareable URL configuration ───────────────────────────────────────────────
+// ── Shareable configuration ──────────────────────────────────────────────────
 //
-// Encodes a list of { stepName, capName } pairs plus a global cycle count
-// into a compact, URL-safe base64 string suitable for use as a `config`
-// query parameter, alongside an `ext_link` parameter pointing at the source
-// litematic. Per-pair stack counts are intentionally *not* stored — they're
-// re-derived via resolveManualCycleCounts() on load, from the same LCM logic
-// used everywhere else. See main.js's loadFromExtLink for the corresponding
-// restore logic.
+// Encodes clusters + cycles + cluster gap into a compact, URL-safe base64
+// string used as the `config` query parameter (alongside `ext_link`).
+// Copy counts aren't stored — they're re-derived on load. Older configs
+// made of Step/Cap pairs still decode: each pair becomes a cluster.
 
-export function encodeManualConfig(pairs, cycles = 1) {
+export function encodeStackConfig(clusters, cycles = 1, clusterGap = 0) {
   const json = JSON.stringify({
+    v: 2,
     cycles,
-    pairs: pairs.map(p => ({ step: p.stepName, cap: p.capName })),
+    gap: clusterGap,
+    clusters: clusters.map(c => {
+      const out = {};
+      for (const [key, role] of [['r', 'region'], ['s', 'step'], ['c', 'cap']]) {
+        const list = c.regions.filter(r => r.role === role).map(r => r.name);
+        if (list.length) out[key] = list;
+      }
+      return out;
+    }),
   });
   // Percent-encode then repack as Latin1 so btoa (which only handles Latin1)
   // can safely base64-encode arbitrary UTF-8 region names.
@@ -297,24 +309,43 @@ export function encodeManualConfig(pairs, cycles = 1) {
   return btoa(latin1);
 }
 
-export function decodeManualConfig(str) {
+export function decodeStackConfig(str) {
   try {
     const latin1 = atob(str);
     const json = decodeURIComponent(
       Array.from(latin1).map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
     );
     const parsed = JSON.parse(json);
-    if (!parsed || !Array.isArray(parsed.pairs)) return null;
+    if (!parsed) return null;
 
-    const pairs = parsed.pairs
-      .filter(p => p && typeof p.step === 'string' && typeof p.cap === 'string')
-      .map(p => ({ stepName: p.step, capName: p.cap }));
+    const names = list => (Array.isArray(list) ? list.filter(n => typeof n === 'string') : []);
+    let clusters = [];
 
-    if (!pairs.length) return null;
+    if (Array.isArray(parsed.clusters)) {
+      clusters = parsed.clusters.map(c => ({
+        regions: [
+          ...names(c?.r).map(name => ({ name, role: 'region' })),
+          ...names(c?.s).map(name => ({ name, role: 'step' })),
+          ...names(c?.c).map(name => ({ name, role: 'cap' })),
+        ],
+      }));
+    } else if (Array.isArray(parsed.pairs)) {
+      // Old format: one Step/Cap pair per entry.
+      clusters = parsed.pairs
+        .filter(p => p && typeof p.step === 'string' && typeof p.cap === 'string')
+        .map(p => ({ regions: [{ name: p.step, role: 'step' }, { name: p.cap, role: 'cap' }] }));
+    }
 
-    return { pairs, cycles: Math.max(1, parseInt(parsed.cycles, 10) || 1) };
+    clusters = clusters.filter(c => c.regions.length);
+    if (!clusters.length) return null;
+
+    return {
+      clusters,
+      cycles: Math.max(1, parseInt(parsed.cycles, 10) || 1),
+      gap: Math.max(0, parseInt(parsed.gap, 10) || 0),
+    };
   } catch (err) {
-    console.error('Failed to decode manual stacking config:', err);
+    console.error('Failed to decode stacking config:', err);
     return null;
   }
 }
