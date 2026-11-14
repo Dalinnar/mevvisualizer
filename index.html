@@ -71,23 +71,13 @@
         <div class="panel-section" id="stacking-section" style="display:none;">
           <div class="section-title">Stacking</div>
 
-          <div class="segmented" id="stacking-mode-section" style="display:none;">
-            <label class="seg">
-              <input type="radio" name="stacking-mode" id="mode-automatic" value="automatic" checked>
-              <span>⚙️ Automatic</span>
-            </label>
-            <label class="seg">
-              <input type="radio" name="stacking-mode" id="mode-manual" value="manual">
-              <span>✋ Manual</span>
-            </label>
-          </div>
-          <p class="hint" id="stack-mode-hint"></p>
+          <p class="hint" id="stack-mode-hint">You choose what repeats. Pick a Step (the piece that gets repeated) and a Cap (the end piece touching it).</p>
 
-          <div id="stack-controls" style="display:none;">
+          <div id="stack-controls">
             <div class="field-row">
               <div class="field-label">
-                <span id="repeats-label">Repeats</span>
-                <small id="repeats-help">Times the middle is repeated</small>
+                <span>Cycles</span>
+                <small>Repeats the whole Step/Cap pattern</small>
               </div>
               <div class="stepper">
                 <button type="button" data-step-target="stack-count" data-delta="-1" title="One less">−</button>
@@ -95,20 +85,9 @@
                 <button type="button" data-step-target="stack-count" data-delta="1" title="One more">+</button>
               </div>
             </div>
-            <div class="field-row" id="gap-controls">
-              <div class="field-label">
-                <span>Gap</span>
-                <small>Blocks between clusters</small>
-              </div>
-              <div class="stepper">
-                <button type="button" data-step-target="cluster-gap" data-delta="-1" title="One less">−</button>
-                <input id="cluster-gap" type="number" min="0" value="0">
-                <button type="button" data-step-target="cluster-gap" data-delta="1" title="One more">+</button>
-              </div>
-            </div>
           </div>
 
-          <div id="manual-stack-controls" style="display:none;">
+          <div id="manual-stack-controls">
             <div class="manual-selected empty" id="manual-selected">
               <span class="manual-selected-label">Selected</span>
               <b id="manual-selected-name">click a region in the 3D view</b>
@@ -134,7 +113,7 @@
             <div id="manual-config-list"></div>
 
             <div class="button-group">
-              <button id="manual-copy-link" disabled>🔗 Copy shareable link</button>
+              <button id="manual-copy-link" disabled>📋 Copy stacking config</button>
               <button id="manual-clear-configs">🗑️ Clear all pairs</button>
             </div>
             <div id="manual-status" class="status-line"></div>
@@ -188,7 +167,7 @@
               <span class="hud-sep">·</span>
               <span class="hud-key">Del</span> delete
             </div>
-            <div id="hud-manual-actions" class="hud-actions hidden">
+            <div id="hud-manual-actions" class="hud-actions">
               <button type="button" id="hud-set-step" class="hud-btn step" disabled>Set as Step</button>
               <button type="button" id="hud-set-cap" class="hud-btn cap" disabled>Set as Cap</button>
             </div>

@@ -141,8 +141,8 @@ export class InteractiveCanvas {
   }
 
   // Smoothly rotates to the given pitch/yaw (radians), taking the shortest
-  // way around for yaw.
-  animateTo(xRot, yRot, duration = 280) {
+  // way around for yaw. `onDone` runs once the final angle is reached.
+  animateTo(xRot, yRot, duration = 280, onDone = null) {
     this._cancelViewAnimation();
     const TAU = Math.PI * 2;
     const sx = this.xRotation, sy = this.yRotation;
@@ -158,6 +158,7 @@ export class InteractiveCanvas {
       this.yRotation = sy + dy * e;
       this.render();
       this._viewAnimId = t < 1 ? requestAnimationFrame(step) : null;
+      if (t >= 1 && onDone) onDone();
     };
     this._viewAnimId = requestAnimationFrame(step);
   }

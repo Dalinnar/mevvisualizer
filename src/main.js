@@ -6,7 +6,7 @@ import { openMaterialsDialog, loadItemCatalog } from './materials.js';
 import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
-import { validateStackingStructure, stackMiddle, localToWorld, nbtNum, cloneRegionWithPosition } from './validate.js';
+import { localToWorld, nbtNum, cloneRegionWithPosition } from './validate.js';
 import { manualStackMulti, resolveManualCycleCounts, detectManualStackAxis, encodeManualConfig, decodeManualConfig } from './manualStack.js';
 
 // Region names come from the uploaded file, so escape them before they go
@@ -258,19 +258,19 @@ async function init() {
 
   let currentStructure = null, currentRenderer = null, currentCamera = null,
     currentBuilder = null, slider = null, originalBuffer = null, originalNbt = null, lastStackedNbt = null,
-    currentStrideAxis = null, currentClusterCount = 0, currentRegionMeshes = [],
+    currentRegionMeshes = [],
     selectedRegionName = null, selectionMesh = null, markerMeshes = [],
     // Axes the size card lets the user edit (see updateEnclosingSizeDisplay).
     sizeEditable = [],
-    manualMode = false, manualCurrentStep = null, manualCurrentCap = null,
-    manualConfigs = [], currentExtLink = null, lastAutoValidation = null,
+    manualCurrentStep = null, manualCurrentCap = null,
+    manualConfigs = [], currentExtLink = null,
     // The root NBT compound backing whatever is currently on screen (post
-    // auto/manual stack if any, otherwise the original) — kept in sync so
+    // stack if any, otherwise the original) — kept in sync so
     // the keyboard region-editing controls (move/delete) always mutate the
     // exact Regions compound that's actually being rendered.
     currentActiveRoot = null,
     // True once a move/delete has happened since the last save (or load).
-    // Auto/manual stacking always re-derive from originalBuffer, so moves
+    // Stacking always re-derives from originalBuffer, so moves
     // are invisible to them until "Save Region Edits" bakes the current
     // layout back into originalBuffer/originalNbt.
     hasUnsavedRegionEdits = false,
@@ -329,8 +329,6 @@ async function init() {
   // informational — doesn't itself bind any keys.
   function updateSelectionHud(regionName) {
     const hud = document.getElementById('selection-hud');
-    // Quick Step/Cap buttons, only relevant while building manual pairs.
-    document.getElementById('hud-manual-actions').classList.toggle('hidden', !manualMode);
     if (!regionName) {
       hud.classList.add('hidden');
       return;
@@ -502,8 +500,7 @@ async function init() {
   // applied) into a fresh originalBuffer/originalNbt, via a write()+read()
   // round trip through the *same* NbtFile settings (name/compression/
   // littleEndian/bedrockHeader) the upload already had. This is the "reload
-  // the litematic" step: from this point on, auto stacking, manual stacking,
-  // and the Download button all treat the edited layout as the new base,
+  // the litematic" step: from this point on, stacking and the Download button all treat the edited layout as the new base,
   // exactly as if it had been uploaded that way to begin with.
   async function saveRegionEditsAsOriginal() {
     if (!currentActiveRoot || !originalNbt) return;
@@ -537,26 +534,11 @@ async function init() {
     clearConfigFromUrl();
 
     syncVersionInput(originalNbt);
-    updateStackingModeVisibility(originalNbt);
     updateManualStatus();
 
-    const validation = validateStackingStructure(originalNbt);
-    lastAutoValidation = validation;
-
-    if (manualMode && manualConfigs.length) {
+    if (manualConfigs.length) {
       await applyManualStack();
-      return;
-    }
-
-    if (!manualMode && validation.isValid) {
-      document.getElementById('stack-controls').style.display = 'block';
-      document.getElementById('stack-count').value = 1;
-      document.getElementById('cluster-gap').value = 0;
-      const hasMultipleClusters = validation.details.clusterCount > 1;
-      document.getElementById('gap-controls').style.display = hasMultipleClusters ? '' : 'none';
-      await renderStructure(originalNbt, 1, 0);
     } else {
-      document.getElementById('stack-controls').style.display = manualMode ? 'block' : 'none';
       await renderStructure(originalNbt);
     }
   }
@@ -568,25 +550,9 @@ async function init() {
     return { w: n("x"), h: n("y"), d: n("z") };
   };
 
-  // Automatic/Manual stacking only make sense with more than 2 regions (a
-  // Step/Cap or Start/End pair alone leaves nothing to stack in between).
-  // Shows/hides the mode-toggle section accordingly, and if the section is
-  // being hidden while manual mode was active, falls back to automatic.
-  function updateStackingModeVisibility(nbt) {
-    const root = nbt.root ?? nbt;
-    const regionCount = Array.from(root.get("Regions").keys()).length;
-    const visible = regionCount > 2;
-    document.getElementById('stacking-mode-section').style.display = visible ? '' : 'none';
-    if (!visible && manualMode) {
-      document.getElementById('mode-automatic').checked = true;
-      setManualMode(false);
-    }
-    return visible;
-  }
-
   // ── Size probing ───────────────────────────────────────────────────────────
   // Stacking grows the structure linearly, so to turn a wanted size back into
-  // a repeat count / gap we measure the size at two settings and interpolate.
+  // a cycle count we measure the size at two settings and interpolate.
   // Results are cached per loaded file (originalBuffer never changes until a
   // new file is loaded or edits are saved, which swaps the buffer).
   const probeCache = new WeakMap();
@@ -603,13 +569,6 @@ async function init() {
   }
   const parseOriginal = () => deepslate.NbtFile.read(new Uint8Array(originalBuffer));
 
-  function probeAutoSize(stackSize, gap) {
-    return memoProbe(`a|${stackSize}|${gap}`, () => {
-      const stacked = stackMiddle(parseOriginal(), stackSize, gap);
-      return readEnclosing(stacked.root ?? stacked);
-    });
-  }
-
   function probeManualSize(cycles) {
     // Pairs are part of the key: the same file gives different sizes when
     // the saved pairs change.
@@ -621,25 +580,12 @@ async function init() {
     });
   }
 
-  // Describes which size axes are editable in the current mode, so the size
-  // card can render them as steppers with a short "what this does" note.
-  //   auto:   stride axis → changes Repeats, parallel axis → changes Gap
-  //   manual: every axis a saved pair stacks along → changes Cycles
-  function describeEditableAxes({ mode, strideAxis, clusterCount, axes }) {
+  // Describes which size axes are editable, so the size card can render them
+  // as steppers with a short "what this does" note: every axis a saved pair
+  // stacks along changes Cycles.
+  function describeEditableAxes(axes) {
     try {
-      if (mode === 'auto' && strideAxis) {
-        const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value, 10) || 0);
-        const per = probeAutoSize(2, gap)[strideAxis] - probeAutoSize(1, gap)[strideAxis];
-        const out = [{ axis: strideAxis, role: 'stride', note: per > 0 ? `+${per} per repeat` : 'repeats' }];
-        if (clusterCount > 1) {
-          const parallel = strideAxis === 'x' ? 'z' : 'x';
-          const stack = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
-          const perGap = probeAutoSize(stack, 1)[parallel] - probeAutoSize(stack, 0)[parallel];
-          out.push({ axis: parallel, role: 'parallel', note: perGap > 0 ? `+${perGap} per gap` : 'gap' });
-        }
-        return out;
-      }
-      if (mode === 'manual' && axes?.length) {
+      if (axes?.length) {
         const s1 = probeManualSize(1), s2 = probeManualSize(2);
         return axes.map(axis => {
           const per = s2[axis] - s1[axis];
@@ -655,8 +601,7 @@ async function init() {
   // Renders the size card: one cell per axis (X / Y / Z). Axes that stacking
   // can change get −/+ buttons and an editable field with a note saying what
   // moving them does; the rest are read-only. Typing a size and pressing
-  // Enter (or leaving the field) finds the repeat count / gap that gets
-  // closest to it.
+  // Enter (or leaving the field) finds the cycle count that gets closest to it.
   function updateEnclosingSizeDisplay(w, h, d, editable = []) {
     sizeEditable = editable;
     const container = document.getElementById('enclosing-size-display');
@@ -678,13 +623,9 @@ async function init() {
         <span class="size-note">${esc(e.note)}</span></div>`;
     }).join('');
 
-    const roleFor = axis => byAxis[axis]?.role;
-
-    // −/+ move the underlying control by exactly one unit.
+    // −/+ move the Cycles control by exactly one unit.
     container.querySelectorAll('.size-step').forEach(btn => btn.addEventListener('click', () => {
-      const role = roleFor(btn.dataset.axis);
-      const target = { stride: 'stack-count', cycle: 'stack-count', parallel: 'cluster-gap' }[role];
-      stepNumberInput(document.getElementById(target), parseInt(btn.dataset.delta, 10));
+      stepNumberInput(document.getElementById('stack-count'), parseInt(btn.dataset.delta, 10));
     }));
 
     container.querySelectorAll('input.size-axis-editable').forEach(input => {
@@ -694,12 +635,7 @@ async function init() {
         if (committing) return;
         committing = true;
         const target = Math.max(1, parseInt(input.value, 10) || 1);
-        if (target !== dims[axis]) {
-          const role = roleFor(axis);
-          if (role === 'stride') await applyTargetStrideSize(target, axis);
-          else if (role === 'parallel') await applyTargetParallelSize(target, axis);
-          else await applyTargetCycleSize(target, axis);
-        }
+        if (target !== dims[axis]) await applyTargetCycleSize(target, axis);
         committing = false;
       };
       input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
@@ -718,60 +654,9 @@ async function init() {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  // Given a desired total size along the growing axis, figures out the stack
-  // count needed to reach it (growth is linear per stack unit), applies it,
-  // and re-renders.
-  async function applyTargetStrideSize(targetSize, strideAxis) {
-    if (!originalBuffer) return;
-    const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);
-
-    let size1, size2;
-    try {
-      size1 = probeAutoSize(1, gap)[strideAxis];
-      size2 = probeAutoSize(2, gap)[strideAxis];
-    } catch (err) {
-      console.error('Failed to probe size for target stride:', err);
-      return;
-    }
-
-    const perStack = size2 - size1;
-    let neededStack = 1;
-    if (perStack > 0) {
-      neededStack = Math.max(1, Math.round(1 + (targetSize - size1) / perStack));
-    }
-
-    document.getElementById('stack-count').value = neededStack;
-    await rerender();
-  }
-
-  // Given a desired total size along the parallel (free) axis, figures out
-  // the cluster gap needed to reach it (growth is linear per gap unit),
-  // applies it, and re-renders.
-  async function applyTargetParallelSize(targetSize, parallelAxis) {
-    if (!originalBuffer) return;
-    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
-
-    let size1, size2;
-    try {
-      size1 = probeAutoSize(stackSize, 0)[parallelAxis];
-      size2 = probeAutoSize(stackSize, 1)[parallelAxis];
-    } catch (err) {
-      console.error('Failed to probe size for target parallel axis:', err);
-      return;
-    }
-
-    const perGap = size2 - size1;
-    let neededGap = 0;
-    if (perGap > 0) {
-      neededGap = Math.max(0, Math.round((targetSize - size1) / perGap));
-    }
-
-    document.getElementById('cluster-gap').value = neededGap;
-    await rerender();
-  }
-
-  // Manual-mode equivalent: finds the cycle count (the shared Stack Count
-  // field) whose resulting size along `axis` is closest to the target.
+  // Finds the cycle count (the Cycles field) whose resulting size along
+  // `axis` is closest to the target (growth is linear per cycle), applies
+  // it, and re-renders.
   async function applyTargetCycleSize(targetSize, axis) {
     if (!originalBuffer || !manualConfigs.length) return;
 
@@ -804,76 +689,6 @@ async function init() {
   }
 
   // ── Manual Stacking ─────────────────────────────────────────────────────────
-
-  // One-line explanation under the Stacking title, so it's always clear what
-  // the current mode does (or why automatic stacking isn't available).
-  function updateStackHint() {
-    const el = document.getElementById('stack-mode-hint');
-    if (!el) return;
-    if (manualMode) {
-      el.textContent = 'You choose what repeats. Pick a Step (the piece that gets repeated) and a Cap (the end piece touching it).';
-    } else if (lastAutoValidation?.isValid) {
-      el.textContent = 'The middle region(s) between the start and end are repeated automatically.';
-    } else if (lastAutoValidation) {
-      const why = lastAutoValidation.errors?.[0];
-      el.textContent = `Automatic stacking isn't available for this file${why ? ` (${why})` : ''}.` +
-        ' Use Manual stacking to build it yourself.';
-    } else {
-      el.textContent = '';
-    }
-  }
-
-  // Toggles between the automatic and manual stacking UI. The Repeats input
-  // (#stack-count, inside #stack-controls) is shared by both modes; only the
-  // automatic-only Cluster Gap control is hidden while in manual mode.
-  // `userInitiated` is true when the person flipped the Automatic/Manual
-  // switch, in which case the 3D view is also re-rendered to match.
-  function setManualMode(enabled, userInitiated = false) {
-    manualMode = enabled;
-    document.getElementById('manual-stack-controls').style.display = enabled ? 'block' : 'none';
-    document.getElementById('repeats-label').textContent = enabled ? 'Cycles' : 'Repeats';
-    document.getElementById('repeats-help').textContent = enabled
-      ? 'Repeats the whole Step/Cap pattern'
-      : 'Times the middle is repeated';
-
-    // Entering manual mode with no saved pairs yet: the 3D view may still be
-    // showing an automatically-stacked render (e.g. "middle_0", "middle_1"
-    // copies from stackMiddle()). Manual stacking always resolves region
-    // names against the pristine original NBT, so if we let the user click
-    // regions from a stacked render, they can select names that don't exist
-    // in the original (see resolveManualCycleCounts's "region not found"
-    // error). Reset to the original, unstacked structure so what's
-    // clickable matches what manual stacking will actually operate on.
-    if (enabled && !manualConfigs.length && originalBuffer) {
-      renderStructure(deepslate.NbtFile.read(new Uint8Array(originalBuffer)));
-    }
-
-    if (enabled) {
-      // Manual stacking only needs a Stack Count, not a cluster gap — and it
-      // doesn't require automatic validity, so show it as long as a file is
-      // loaded at all.
-      document.getElementById('gap-controls').style.display = 'none';
-      document.getElementById('stack-controls').style.display = originalBuffer ? 'block' : 'none';
-    } else if (lastAutoValidation?.isValid) {
-      document.getElementById('stack-controls').style.display = 'block';
-      document.getElementById('gap-controls').style.display =
-        lastAutoValidation.details.clusterCount > 1 ? '' : 'none';
-    } else {
-      document.getElementById('stack-controls').style.display = 'none';
-      document.getElementById('gap-controls').style.display = 'none';
-    }
-
-    // Leaving manual mode by hand: show the automatic result (or the plain
-    // original) instead of leaving the manual one on screen.
-    if (!enabled && userInitiated && originalBuffer) {
-      if (lastAutoValidation?.isValid) rerender();
-      else renderStructure(parseOriginal());
-    }
-
-    updateStackHint();
-    updateSelectionHud(selectedRegionName);
-    updateManualStatus();
-  }
 
   // World-space info for every region of the *original* file (what manual
   // stacking actually operates on), memoized per loaded file.
@@ -927,7 +742,7 @@ async function init() {
   // obvious which regions are picked, without needing to read the panel.
   function rebuildMarkerMeshes() {
     markerMeshes = [];
-    if (manualMode && currentBuilder) {
+    if (currentBuilder) {
       const bounds = currentBuilder.getRegionBoundsLocal();
       for (const [name, color] of [[manualCurrentStep, STEP_COLOR], [manualCurrentCap, CAP_COLOR]]) {
         const b = name && bounds[name];
@@ -1032,17 +847,15 @@ async function init() {
     document.getElementById('manual-save-config').disabled = !check || check.kind === 'error';
 
     const copyBtn = document.getElementById('manual-copy-link');
-    copyBtn.disabled = !(manualConfigs.length && currentExtLink);
-    copyBtn.title = currentExtLink
-      ? 'Copy a link that opens this litematic with these pairs applied'
-      : 'Only available for litematics opened through a ?ext_link= URL';
+    copyBtn.disabled = !manualConfigs.length;
+    copyBtn.title = 'Copy the encoded stacking config (Step/Cap pairs + stack count)';
 
     rebuildMarkerMeshes();
   }
 
   // Runs manualStackMulti() with either the given list of pairs (used when
   // restoring from a shared URL) or the currently-saved list, then renders
-  // the result the same way automatic stacking does. Per-pair stack counts
+  // the result. Per-pair stack counts
   // are always re-derived from the LCM logic (see resolveManualCycleCounts),
   // scaled by the shared Stack Count field as a cycle multiplier — never
   // read from a per-pair value.
@@ -1083,30 +896,20 @@ async function init() {
     syncConfigToUrl();
 
     lastStackedNbt = result.nbt;
-    currentStrideAxis = null;
-    currentClusterCount = 0;
 
     const root = result.nbt.root || result.nbt;
     currentActiveRoot = root;
     const { w, h, d } = getEnclosing(root);
-    updateEnclosingSizeDisplay(w, h, d, describeEditableAxes({
-      mode: 'manual',
-      axes: [...new Set(resolvedConfigs.map(c => c.axis))],
-    }));
+    updateEnclosingSizeDisplay(w, h, d,
+      describeEditableAxes([...new Set(resolvedConfigs.map(c => c.axis))]));
 
     const builder = new StructureBuilder(w, h, d);
     await buildAndRender(builder, root.get("Regions"), w, h, d);
   }
 
-  // Copies the current shareable URL to the clipboard. The address bar is
-  // already kept in sync with the applied configuration via syncConfigToUrl,
-  // so this just needs to make sure that's up to date and an ext_link is
-  // actually present (otherwise a recipient would have nothing to fetch).
-  function copyManualShareLink() {
-    if (!currentExtLink) {
-      alert('Shareable links are only available for litematics loaded via a ?ext_link= URL.');
-      return;
-    }
+  // Copies the encoded stacking config (the same string used for the URL's
+  // `config` parameter) to the clipboard.
+  function copyManualStackingConfig() {
     if (!manualConfigs.length) {
       alert('Save at least one Step/Cap pair first.');
       return;
@@ -1114,33 +917,47 @@ async function init() {
 
     syncConfigToUrl();
 
-    navigator.clipboard?.writeText(window.location.href).then(() => {
-      alert('Shareable link copied to clipboard!');
+    const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
+    const config = encodeManualConfig(manualConfigs, cycles);
+
+    const copy = navigator.clipboard?.writeText(config) ?? Promise.reject();
+    copy.then(() => {
+      alert('Stacking config copied to clipboard!');
     }).catch(() => {
-      prompt('Copy this link:', window.location.href);
+      prompt('Copy this stacking config:', config);
     });
+  }
+
+  // With a preloaded config, the Size card is moved up right under the
+  // download buttons, so everything needed to resize and download is
+  // visible without scrolling. Otherwise it sits in its normal spot at
+  // the bottom of the panel.
+  const sizeSection = document.getElementById('size-section');
+  const sizeSectionHome = { parent: sizeSection.parentNode, next: sizeSection.nextSibling };
+  function placeSizeSectionAtTop(top) {
+    if (top) {
+      document.querySelector('.file-actions').after(sizeSection);
+    } else {
+      sizeSectionHome.parent.insertBefore(sizeSection, sizeSectionHome.next);
+    }
   }
 
   // If the URL has a `config` parameter, restores it onto whatever file was
   // just loaded (regardless of whether it came from ?ext_link= or a manual
   // upload) and applies it immediately. Returns true if a config was found
-  // and applied, false otherwise — callers should fall back to automatic
-  // detection when this returns false.
+  // and applied, false otherwise — callers should render the plain structure
+  // when this returns false.
   async function restoreManualConfigFromUrl() {
     const configParam = new URLSearchParams(window.location.search).get('config');
-    if (!configParam) return false;
-
-    const decoded = decodeManualConfig(configParam);
-    if (!decoded) {
-      console.warn('Failed to parse manual stacking config from URL; falling back to automatic detection.');
-      return false;
+    const decoded = configParam ? decodeManualConfig(configParam) : null;
+    if (configParam && !decoded) {
+      console.warn('Failed to parse manual stacking config from URL; showing the plain structure.');
     }
+    placeSizeSectionAtTop(!!decoded);
+    if (!decoded) return false;
 
-    document.getElementById('mode-manual').checked = true;
-    setManualMode(true);
     manualConfigs = decoded.pairs;
     document.getElementById('stack-count').value = decoded.cycles;
-    document.getElementById('stack-controls').style.display = 'block';
     renderManualConfigList();
     updateManualStatus();
     await applyManualStack(decoded.pairs);
@@ -1152,7 +969,7 @@ async function init() {
   // adding browser history entries. Called automatically every time a
   // manual stack is (re-)applied.
   function syncConfigToUrl() {
-    if (!manualMode || !manualConfigs.length) return;
+    if (!manualConfigs.length) return;
 
     const cycles = Math.max(1, parseInt(document.getElementById('stack-count').value, 10) || 1);
     const config = encodeManualConfig(manualConfigs, cycles);
@@ -1338,55 +1155,27 @@ async function init() {
   }
 
   // ── Main render entry point ────────────────────────────────────────────────
-  async function renderStructure(nbt, stackSize = null, gap = 0) {
+  // Renders an unstacked structure (stacked results go through applyManualStack).
+  async function renderStructure(nbt) {
     // Cleared here and set once buildAndRender finishes below — a headless
     // screenshot tool can poll/await window.mevRendererReady (or listen for
     // the 'mev-render-complete' event) instead of guessing a fixed delay.
     // See docs/headless-render.md.
     window.mevRendererReady = false;
     progressDisplay.style.display = 'block';
-    progressDisplay.textContent = stackSize ? 'Stacking...' : 'Loading structure...';
+    progressDisplay.textContent = 'Loading structure...';
 
-    let root = nbt.root || nbt;
+    const root = nbt.root || nbt;
     lastStackedNbt = null;
-    currentStrideAxis = null;
-    currentClusterCount = 0;
-
-    if (stackSize) {
-      const validation = validateStackingStructure(nbt);
-      currentStrideAxis = validation.isValid && validation.stackAxis
-        ? validation.stackAxis.replace('-', '')
-        : null;
-      currentClusterCount = validation.isValid ? validation.details.clusterCount : 0;
-
-      const stacked = stackMiddle(nbt, stackSize, gap);
-      lastStackedNbt = stacked;
-      root = stacked.root;
-    }
-
     currentActiveRoot = root;
 
     const { w, h, d } = getEnclosing(root);
     // Always show the size; only stacked renders have editable axes.
-    updateEnclosingSizeDisplay(w, h, d, stackSize
-      ? describeEditableAxes({ mode: 'auto', strideAxis: currentStrideAxis, clusterCount: currentClusterCount })
-      : []);
-    updateStackHint();
+    updateEnclosingSizeDisplay(w, h, d, []);
 
     const builder = new StructureBuilder(w, h, d);
     await buildAndRender(builder, root.get("Regions"), w, h, d);
   }
-
-  // ── Shared stack re-render ─────────────────────────────────────────────────
-  const rerender = async () => {
-    if (!originalBuffer) return;
-    const stackSize = Math.max(1, parseInt(document.getElementById('stack-count').value) || 1);
-    const gap = Math.max(0, parseInt(document.getElementById('cluster-gap').value) || 0);
-    // stackMiddle() no longer mutates its input, so the cached parse can be
-    // reused directly here instead of re-parsing (and re-decompressing) the
-    // raw litematic bytes on every single stack-count/gap tick.
-    await renderStructure(originalNbt ?? deepslate.NbtFile.read(new Uint8Array(originalBuffer)), stackSize, gap);
-  };
 
   // ── Fetch from external URL (with allorigins fallback) ────────────────────
   async function fetchExternalFile(url) {
@@ -1440,7 +1229,6 @@ async function init() {
     const nbt = deepslate.NbtFile.read(new Uint8Array(originalBuffer));
     originalNbt = nbt;
     syncVersionInput(nbt);
-    updateStackingModeVisibility(nbt);
     hasUnsavedRegionEdits = false;
     updateSaveEditsButton();
     showRegionEditControls(true);
@@ -1450,23 +1238,7 @@ async function init() {
     // or a manual upload (see the file-input handler below for the other case).
     if (await restoreManualConfigFromUrl()) return;
 
-    const validation = validateStackingStructure(nbt);
-    lastAutoValidation = validation;
-
-    if (validation.isValid) {
-      document.getElementById('stack-controls').style.display = 'block';
-      document.getElementById('stack-count').value = 1;
-      document.getElementById('cluster-gap').value = 0;
-
-      const hasMultipleClusters = validation.details.clusterCount > 1;
-      document.getElementById('gap-controls').style.display =
-        (!manualMode && hasMultipleClusters) ? '' : 'none';
-
-      await renderStructure(originalNbt, 1, 0);
-    } else {
-      document.getElementById('stack-controls').style.display = manualMode ? 'block' : 'none';
-      await renderStructure(nbt);
-    }
+    await renderStructure(nbt);
   }
 
   // ── Event listeners ────────────────────────────────────────────────────────
@@ -1481,10 +1253,8 @@ async function init() {
       timer = setTimeout(() => fn(...args), delayMs);
     };
   }
-  const debouncedRerender = debounce(rerender, 120);
   // Movement is applied immediately (so held/repeated keys accumulate
-  // correctly) but the expensive full rebuild is debounced, same as the
-  // stack-count/gap spinners above.
+  // correctly) but the expensive full rebuild is debounced.
   const debouncedRegionRerender = debounce(rerenderCurrentRegions, 100);
 
   // ── Keyboard controls for the selected region ──────────────────────────────
@@ -1540,26 +1310,11 @@ async function init() {
   });
 
   document.getElementById('stack-count').addEventListener('change', async () => {
-    if (manualMode) {
-      renderManualConfigList();
-      if (manualConfigs.length && originalBuffer) await applyManualStack();
-      return;
-    }
-    debouncedRerender();
-  });
-  document.getElementById('cluster-gap').addEventListener('change', () => {
-    if (manualMode) return; // cluster gap doesn't apply to manual stacking
-    debouncedRerender();
+    renderManualConfigList();
+    if (manualConfigs.length && originalBuffer) await applyManualStack();
   });
 
-  document.getElementById('mode-automatic').addEventListener('change', e => {
-    if (e.target.checked) setManualMode(false, true);
-  });
-  document.getElementById('mode-manual').addEventListener('change', e => {
-    if (e.target.checked) setManualMode(true, true);
-  });
-
-  // −/+ buttons next to number inputs (Repeats, Gap): data-step-target names
+  // −/+ buttons next to number inputs (Cycles): data-step-target names
   // the input, data-delta the amount.
   document.querySelectorAll('[data-step-target]').forEach(btn => btn.addEventListener('click', () => {
     stepNumberInput(document.getElementById(btn.dataset.stepTarget), parseInt(btn.dataset.delta, 10));
@@ -1607,7 +1362,7 @@ async function init() {
     // Back to the plain structure (the stacked view no longer has any pairs).
     if (originalBuffer) await renderStructure(parseOriginal());
   });
-  document.getElementById('manual-copy-link').addEventListener('click', () => copyManualShareLink());
+  document.getElementById('manual-copy-link').addEventListener('click', () => copyManualStackingConfig());
   document.getElementById('save-region-edits').addEventListener('click', () => saveRegionEditsAsOriginal());
 
   document.getElementById('clone-confirm').addEventListener('click', () => performClone());
@@ -1642,12 +1397,16 @@ async function init() {
     if (btn.dataset.projection) {
       currentCamera.ortho = btn.dataset.projection === 'orthographic';
       currentCamera.redraw();
+      updateViewToolbar();
     } else if (btn.dataset.view && VIEW_PRESETS[btn.dataset.view]) {
       const p = VIEW_PRESETS[btn.dataset.view];
       currentCamera.ortho = true;
-      currentCamera.animateTo(p.x, p.y);
+      // The camera is still at the old angle until the animation runs, so
+      // highlight the clicked preset right away, then re-check at the end.
+      updateViewToolbar();
+      e.currentTarget.querySelectorAll('button[data-view]').forEach(b => b.classList.toggle('active', b === btn));
+      currentCamera.animateTo(p.x, p.y, undefined, updateViewToolbar);
     }
-    updateViewToolbar();
     // Drop focus so Space/Shift (camera up/down) don't re-trigger the button.
     btn.blur();
   });
@@ -1658,8 +1417,6 @@ async function init() {
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
     originalBuffer = lastStackedNbt = null;
     originalNbt = null;
-    currentStrideAxis = null;
-    currentClusterCount = 0;
     currentRegionMeshes = [];
     selectedRegionName = null;
     selectionMesh = null;
@@ -1670,36 +1427,48 @@ async function init() {
     manualCurrentCap = null;
     manualConfigs = [];
     currentExtLink = null;
-    lastAutoValidation = null;
     currentActiveRoot = null;
     hasUnsavedRegionEdits = false;
     updateSaveEditsButton();
     closeCloneGui();
     showRegionEditControls(false);
-    document.getElementById('mode-automatic').checked = true;
-    setManualMode(false);
-    document.getElementById('stacking-mode-section').style.display = 'none';
+    placeSizeSectionAtTop(false);
     renderManualConfigList();
+    updateManualStatus();
     clearConfigFromUrl();
     document.getElementById('enclosing-size-display').innerHTML = '';
     document.getElementById('slider-container').classList.remove('active');
     document.getElementById('file-input').value = '';
-    document.getElementById('stack-controls').style.display = 'none';
-    document.getElementById('gap-controls').style.display = 'none';
     document.getElementById('stack-count').value = 1;
-    document.getElementById('cluster-gap').value = 0;
     document.getElementById('version-controls').style.display = 'none';
     document.getElementById('version-override').value = '';
     document.getElementById('manual-status').textContent = '';
   });
+
+  // Name of the loaded litematic: the uploaded file's name, or the last path
+  // segment of the ?ext_link= URL. Empty string if neither is known.
+  function getSourceFileName() {
+    const uploaded = document.getElementById('file-input').files[0]?.name;
+    if (uploaded) return uploaded;
+    if (!currentExtLink) return '';
+    try {
+      return decodeURIComponent(currentExtLink.split(/[?#]/)[0].split('/').pop() || '');
+    } catch {
+      return currentExtLink.split(/[?#]/)[0].split('/').pop() || '';
+    }
+  }
+
+  // Source file name without its .litematic extension, for building download names.
+  function getSourceBaseName() {
+    return getSourceFileName().replace(/\.litematic$/i, '').trim() || 'structure';
+  }
 
   document.getElementById('download-materials').addEventListener('click', () => {
     if (!currentBuilder) return alert("No structure loaded!");
     const meta = currentActiveRoot?.get?.('Metadata') ?? originalNbt?.root?.get?.('Metadata');
     const str = key => { const t = meta?.get?.(key); return (t?.getAsString?.() ?? t?.value ?? '').toString().trim(); };
     const b = currentBuilder.getActualBounds();
-    const fileName = document.getElementById('file-input').files[0]?.name
-      || (currentExtLink ? decodeURIComponent(currentExtLink.split(/[?#]/)[0].split('/').pop() || '') : '');
+    const fileName = getSourceFileName();
     openMaterialsDialog(currentBuilder, {
       name: str('Name'),
       author: str('Author'),
@@ -1722,7 +1491,7 @@ async function init() {
   });
 
   document.getElementById('download-litematic').addEventListener('click', () => {
-    // Stacking (auto or manual) produces its own dedicated NbtFile in
+    // Stacking produces its own dedicated NbtFile in
     // lastStackedNbt — prefer that when present. Otherwise, fall back to
     // whatever's actually on screen (the original load, or any moves/
     // deletes/clones applied to it) by wrapping currentActiveRoot in a
@@ -1737,14 +1506,15 @@ async function init() {
 
     if (!nbtToDownload) return alert("Load a litematic first!");
 
+    const base = getSourceBaseName();
+
     if (!lastStackedNbt) {
-      downloadLitematic(nbtToDownload, 'edited.litematic');
+      downloadLitematic(nbtToDownload, `${base}_edited.litematic`);
       return;
     }
 
     const stackSize = document.getElementById('stack-count').value || 1;
-    const gap = document.getElementById('cluster-gap').value || 0;
-    downloadLitematic(nbtToDownload, `stacked_${stackSize}x_gap${gap}.litematic`);
+    downloadLitematic(nbtToDownload, `${base}_stack${stackSize}x.litematic`);
   });
 
   document.getElementById('file-input').addEventListener('change', async e => {
@@ -1760,7 +1530,6 @@ async function init() {
     originalNbt = nbt;
     syncVersionInput(nbt); // ← add this
     currentExtLink = null; // manually-uploaded files have no shareable source URL
-    updateStackingModeVisibility(nbt);
     updateManualStatus();
     hasUnsavedRegionEdits = false;
     updateSaveEditsButton();
@@ -1771,28 +1540,7 @@ async function init() {
     // uploaded manually), restore and apply it onto this file too.
     if (await restoreManualConfigFromUrl()) return;
 
-    const validation = validateStackingStructure(nbt);
-    lastAutoValidation = validation;
-
-    if (validation.isValid) {
-      document.getElementById('stack-controls').style.display = 'block';
-      document.getElementById('stack-count').value = 1;
-      document.getElementById('cluster-gap').value = 0;
-
-      // Show gap controls only when there are multiple clusters (and only
-      // in automatic mode; manual stacking doesn't use a cluster gap).
-      const hasMultipleClusters = validation.details.clusterCount > 1;
-      document.getElementById('gap-controls').style.display =
-        (!manualMode && hasMultipleClusters) ? '' : 'none';
-
-      await renderStructure(originalNbt, 1, 0);
-    } else {
-      // Automatic stacking isn't available for this structure, but manual
-      // stacking doesn't require automatic validity — keep the shared Stack
-      // Count control visible if manual mode is active.
-      document.getElementById('stack-controls').style.display = manualMode ? 'block' : 'none';
-      await renderStructure(nbt);
-    }
+    await renderStructure(nbt);
   });
 
   // ── Auto-load from URL param if present ───────────────────────────────────
