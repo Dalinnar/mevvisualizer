@@ -2,7 +2,7 @@ import { InteractiveCanvas } from './camera.js';
 import { create3DBlocks } from './region.js';
 import { loadBlockData, ResourceLoader } from './resources.js';
 import { StructureBuilder } from './structure.js';
-import { openMaterialsDialog, loadItemCatalog } from './materials.js';
+import { openMaterialsDialog, loadItemCatalog, computeMaterialsFromBlocks, decorateMaterials, materialIconStyle, describeStacks } from './materials.js';
 import { DoubleRangeSlider } from './slider.js';
 const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
@@ -45,6 +45,11 @@ const vsSelect = `
     vColor = vertColor;
   }
 `;
+// Tutorial (layer by layer) mode: how strongly the layers below the current
+// one show through, and the outline color around the current layer.
+const GHOST_ALPHA = 0.3;
+const LAYER_OUTLINE_COLOR = [0.5, 1, 0];
+
 const fsSelect = `
   precision highp float;
   varying highp vec3 vColor;
@@ -258,6 +263,9 @@ async function init() {
   progressDisplay.style.display = 'none';
 
   const resources = resourceLoader.getResources();
+  // ?tutorial=true (also 1/yes) opens the first structure in layer mode.
+  let tutorialFromUrl = ['true', '1', 'yes'].includes(
+    (new URLSearchParams(window.location.search).get('tutorial') || '').toLowerCase());
 
   let currentStructure = null, currentRenderer = null, currentCamera = null,
     currentBuilder = null, slider = null, originalBuffer = null, originalNbt = null, lastStackedNbt = null,
@@ -724,13 +732,220 @@ async function init() {
   }
 
   function rebuildWithYRange(minY, maxY) {
-    if (!currentBuilder) return;
+    if (!currentBuilder || tutorial.active) return;
     currentStructure = currentBuilder.buildStructure(minY, maxY);
     if (currentRenderer) {
       currentRenderer.setStructure(currentStructure);
       currentCamera?.redraw();
     }
   }
+
+  // ── Tutorial mode (layer by layer) ─────────────────────────────────────────
+  // Shows one Y layer at a time so people can build along: the current layer
+  // renders normally, the layer(s) below it as a translucent ghost (a second
+  // StructureRenderer drawn with constant-alpha blending), and a card lists
+  // the materials that layer needs. Layers are world Y values of the blocks
+  // currently on screen, so it follows stacking and region edits too.
+  const tutorial = {
+    active: false,
+    layer: null,           // world Y of the current layer
+    ghostMode: 'previous', // 'previous' | 'all' | 'none'
+    follow: true,          // camera moves up/down with the current layer
+    followedY: null,       // local Y the camera was last moved to (null = not yet)
+  };
+  let ghostRenderer = null, ghostVisible = false, layerOutlineMesh = null, itemCatalog = null,
+    cameraFollowAnim = null;
+
+  // Smoothly moves the camera's orbit center to local height `targetY`,
+  // keeping rotation, zoom and X/Z (so a WASD pan or chosen angle stays).
+  function animateCameraCenterY(targetY, duration = 250) {
+    if (cameraFollowAnim) cancelAnimationFrame(cameraFollowAnim);
+    if (!currentCamera) return;
+    const startY = currentCamera.center[1];
+    if (Math.abs(targetY - startY) < 1e-3) return;
+    const t0 = performance.now();
+    const step = now => {
+      const cam = currentCamera;
+      if (!cam) { cameraFollowAnim = null; return; }
+      const t = Math.min(1, (now - t0) / duration);
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      cam.center[1] = startY + (targetY - startY) * e;
+      cam.render();
+      cameraFollowAnim = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    cameraFollowAnim = requestAnimationFrame(step);
+  }
+
+  // Keeps the camera on the current layer: the first time it's centered on
+  // the layer; after that it moves by however many layers were stepped, so
+  // if the person nudged the view up or down that offset is kept.
+  function followTutorialLayer(localY) {
+    if (!tutorial.follow || !currentCamera) return;
+    const target = tutorial.followedY === null
+      ? localY + 0.5
+      : (cameraFollowAnim ? currentTargetY : currentCamera.center[1]) + (localY - tutorial.followedY);
+    tutorial.followedY = localY;
+    currentTargetY = target;
+    animateCameraCenterY(target);
+  }
+  // Where an in-flight follow animation is heading, so quick repeated steps
+  // add up instead of starting from a half-way position.
+  let currentTargetY = 0;
+  // Placed blocks grouped by world Y, per builder (built on first use).
+  const layerBlocksCache = new WeakMap();
+
+  function blocksAtLayer(y) {
+    let byY = layerBlocksCache.get(currentBuilder);
+    if (!byY) {
+      byY = new Map();
+      for (const b of currentBuilder.placedBlocks) {
+        if (!byY.has(b.wy)) byY.set(b.wy, []);
+        byY.get(b.wy).push(b);
+      }
+      layerBlocksCache.set(currentBuilder, byY);
+    }
+    return byY.get(y) || [];
+  }
+
+  function enterTutorial() {
+    if (!currentBuilder) return alert('Load a litematic first!');
+    tutorial.active = true;
+    document.body.classList.add('tutorial-active');
+    document.getElementById('tutorial-bar').classList.remove('hidden');
+    document.getElementById('tutorial-materials').classList.remove('hidden');
+    document.getElementById('tutorial-toggle').classList.add('active');
+    applyTutorialLayer();
+  }
+
+  function exitTutorial() {
+    if (!tutorial.active) return;
+    tutorial.active = false;
+    tutorial.followedY = null;
+    ghostVisible = false;
+    layerOutlineMesh = null;
+    document.body.classList.remove('tutorial-active');
+    document.getElementById('tutorial-bar').classList.add('hidden');
+    document.getElementById('tutorial-materials').classList.add('hidden');
+    document.getElementById('tutorial-toggle').classList.remove('active');
+    // Back to whatever the Y slider was showing.
+    if (currentBuilder && slider) rebuildWithYRange(slider.currentMin, slider.currentMax);
+    else currentCamera?.redraw();
+  }
+
+  function stepTutorial(delta) {
+    if (!tutorial.active || !currentBuilder) return;
+    tutorial.layer += delta;
+    applyTutorialLayer();
+  }
+
+  function gotoTutorialLayer(which) {
+    if (!tutorial.active || !currentBuilder) return;
+    const { minY, maxY } = currentBuilder.getActualBounds();
+    tutorial.layer = which === 'first' ? minY : maxY;
+    applyTutorialLayer();
+  }
+
+  // Rebuilds the current-layer structure, the ghost below it, the layer
+  // outline, the step bar and the materials card for tutorial.layer.
+  function applyTutorialLayer() {
+    if (!tutorial.active || !currentBuilder || !currentRenderer) return;
+    const { minY, maxY, minX, maxX, minZ, maxZ } = currentBuilder.getActualBounds();
+    const y = tutorial.layer = Math.max(minY, Math.min(maxY, tutorial.layer ?? minY));
+
+    currentStructure = currentBuilder.buildStructure(y, y);
+    currentRenderer.setStructure(currentStructure);
+
+    ghostVisible = tutorial.ghostMode !== 'none' && y > minY;
+    if (ghostVisible) {
+      const from = tutorial.ghostMode === 'all' ? -Infinity : y - 1;
+      const ghostStructure = currentBuilder.buildStructure(from, y - 1);
+      if (!ghostRenderer) {
+        ghostRenderer = new StructureRenderer(gl, ghostStructure, resources, {
+          useInvisibleBlockBuffer: false, chunkSize: 16,
+        });
+        patchPrepareDraw(ghostRenderer);
+      } else {
+        ghostRenderer.setStructure(ghostStructure);
+      }
+    }
+
+    const ly = y - minY;
+    layerOutlineMesh = new Mesh()
+      .addLineCube(0, ly, 0, maxX - minX + 1, ly + 1, maxZ - minZ + 1, LAYER_OUTLINE_COLOR)
+      .rebuild(gl, { pos: true, color: true });
+
+    document.getElementById('tutorial-layer-num').textContent = ly + 1;
+    document.getElementById('tutorial-layer-total').textContent = maxY - minY + 1;
+    document.getElementById('tutorial-layer-y').textContent = `Y ${y}`;
+    document.getElementById('tutorial-prev').disabled = document.getElementById('tutorial-first').disabled = y <= minY;
+    document.getElementById('tutorial-next').disabled = document.getElementById('tutorial-last').disabled = y >= maxY;
+
+    renderLayerMaterials();
+    followTutorialLayer(ly);
+    currentCamera?.redraw();
+  }
+
+  // Fills the "This layer" card with the items the current layer needs
+  // (same block -> item rules and icons as the full material list).
+  function renderLayerMaterials() {
+    if (!tutorial.active || !currentBuilder) return;
+    const rows = decorateMaterials(computeMaterialsFromBlocks(blocksAtLayer(tutorial.layer)), itemCatalog);
+    const total = rows.reduce((sum, r) => sum + r.count, 0);
+    document.getElementById('tutorial-materials-summary').textContent = rows.length
+      ? `${rows.length} type${rows.length === 1 ? '' : 's'} · ${total.toLocaleString()} item${total === 1 ? '' : 's'}`
+      : '';
+
+    const list = document.getElementById('tutorial-materials-list');
+    if (!rows.length) {
+      list.innerHTML = '<div class="tutorial-mat-empty">Nothing to place on this layer.</div>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const r of rows) {
+      const el = document.createElement('div');
+      el.className = 'tutorial-mat-row';
+      el.title = `minecraft:${r.id}`;
+      const style = materialIconStyle(r, itemCatalog);
+      el.innerHTML = `
+        <span class="materials-icon${style ? '' : ' missing'}"${style ? ` style='${style}'` : ''}></span>
+        <span class="tutorial-mat-name">${esc(r.name)}</span>
+        <span class="tutorial-mat-qty">
+          <span class="tutorial-mat-count">${r.count.toLocaleString()}</span>
+          ${r.count > r.stackSize ? `<span class="tutorial-mat-stacks">${esc(describeStacks(r.count, r.stackSize))}</span>` : ''}
+        </span>`;
+      frag.appendChild(el);
+    }
+    list.replaceChildren(frag);
+  }
+
+  document.getElementById('tutorial-toggle').addEventListener('click', e => {
+    e.currentTarget.blur();
+    tutorial.active ? exitTutorial() : enterTutorial();
+  });
+  for (const [id, fn] of [
+    ['tutorial-prev', () => stepTutorial(-1)], ['tutorial-next', () => stepTutorial(1)],
+    ['tutorial-first', () => gotoTutorialLayer('first')], ['tutorial-last', () => gotoTutorialLayer('last')],
+    ['tutorial-exit', exitTutorial],
+  ]) {
+    document.getElementById(id).addEventListener('click', e => { e.currentTarget.blur(); fn(); });
+  }
+  document.getElementById('tutorial-ghost').addEventListener('change', e => {
+    tutorial.ghostMode = e.target.value;
+    e.target.blur();
+    applyTutorialLayer();
+  });
+  document.getElementById('tutorial-follow').addEventListener('click', e => {
+    e.currentTarget.blur();
+    tutorial.follow = !tutorial.follow;
+    e.currentTarget.classList.toggle('active', tutorial.follow);
+    // Turning it back on re-centers on the current layer.
+    tutorial.followedY = null;
+    if (tutorial.follow) applyTutorialLayer();
+  });
+  document.getElementById('tutorial-materials-header').addEventListener('click', e => {
+    e.currentTarget.blur();
+    document.getElementById('tutorial-materials').classList.toggle('collapsed');
+  });
 
   // ── Cluster stacking ───────────────────────────────────────────────────────
 
@@ -1054,6 +1269,30 @@ async function init() {
     }
   }
 
+  // Wraps a deepslate renderer's prepareDraw (every draw path goes through
+  // it: structure, grid, region boxes, selection, tutorial ghost) to:
+  //  - re-sync the GL viewport and perspective matrix when the canvas size
+  //    changed. deepslate only sets them in its constructor, so after a
+  //    window/iframe resize the view kept drawing at the old size.
+  //  - swap in the orthographic projection while the camera is in ortho mode.
+  function patchPrepareDraw(renderer) {
+    const basePrepareDraw = renderer.prepareDraw.bind(renderer);
+    renderer.prepareDraw = view => {
+      const c = gl.canvas;
+      if (c.width !== renderer._vpW || c.height !== renderer._vpH) {
+        renderer.setViewport(0, 0, c.width, c.height); // also recomputes projMatrix
+        renderer._vpW = c.width;
+        renderer._vpH = c.height;
+      }
+      basePrepareDraw(view);
+      const cam = currentCamera;
+      if (!cam || !cam.ortho) return;
+      const program = gl.getParameter(gl.CURRENT_PROGRAM);
+      const loc = program && gl.getUniformLocation(program, 'mProj');
+      if (loc) gl.uniformMatrix4fv(loc, false, cam.getOrthoProjection(canvasAspect()));
+    };
+  }
+
   async function buildAndRender(builder, regions, w, h, d) {
     const regionNames = Array.from(regions.keys());
     for (let i = 0; i < regionNames.length; i++) {
@@ -1075,15 +1314,7 @@ async function init() {
     // program's mProj uniform with an orthographic matrix while the camera
     // is in ortho mode. Every draw path (structure, grid, region boxes,
     // selection) goes through prepareDraw, so they all pick this up.
-    const basePrepareDraw = renderer.prepareDraw.bind(renderer);
-    renderer.prepareDraw = view => {
-      basePrepareDraw(view);
-      const cam = currentCamera;
-      if (!cam || !cam.ortho) return;
-      const program = gl.getParameter(gl.CURRENT_PROGRAM);
-      const loc = program && gl.getUniformLocation(program, 'mProj');
-      if (loc) gl.uniformMatrix4fv(loc, false, cam.getOrthoProjection(canvasAspect()));
-    };
+    patchPrepareDraw(renderer);
 
     const bounds = builder.getActualBounds();
     const center = ['x', 'y', 'z'].map(k => (bounds[`min${k.toUpperCase()}`] + bounds[`max${k.toUpperCase()}`]) / 2);
@@ -1117,6 +1348,18 @@ async function init() {
 
     currentCamera = new InteractiveCanvas(canvas, view => {
       renderer.drawStructure(view);
+      if (tutorial.active && ghostVisible && ghostRenderer) {
+        // Layers below, semi-translucent: a depth-only pass first so only the
+        // nearest ghost surface shows, then a color pass that mixes it with
+        // whatever is behind it at a fixed opacity.
+        gl.colorMask(false, false, false, false);
+        ghostRenderer.drawStructure(view);
+        gl.colorMask(true, true, true, true);
+        gl.blendColor(0, 0, 0, GHOST_ALPHA);
+        gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
+        ghostRenderer.drawStructure(view);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      }
       if (showGrid) {
         renderer.drawGrid(view);
       }
@@ -1126,6 +1369,11 @@ async function init() {
         renderer.setShader(renderer.gridShaderProgram);
         renderer.prepareDraw(view);
         currentRegionMeshes.forEach(({ mesh }) => renderer.drawMesh(mesh, { pos: true, color: true }));
+      }
+      if (tutorial.active && layerOutlineMesh) {
+        renderer.setShader(renderer.gridShaderProgram);
+        renderer.prepareDraw(view);
+        renderer.drawMesh(layerOutlineMesh, { pos: true, color: true });
       }
       if (showClusterHighlight && markerMeshes.length) {
         // Blue (Step) / orange (Cap) highlights for the pair being built.
@@ -1182,6 +1430,11 @@ async function init() {
     document.getElementById('slider-container').classList.add('active');
     renderer.setStructure(structure);
     progressDisplay.style.display = 'none';
+
+    // Stay in layer mode across rebuilds (stacking changes, region edits),
+    // on the same Y if it still exists. ?tutorial=true opens in layer mode.
+    if (tutorial.active) applyTutorialLayer();
+    else if (tutorialFromUrl) { tutorialFromUrl = false; enterTutorial(); }
 
     // Signal that a frame reflecting the current structure/camera is on
     // screen. Deferred one frame so the InteractiveCanvas's own initial
@@ -1327,6 +1580,19 @@ async function init() {
       }
       return;
     }
+    // Layer mode: Page Up / ] next layer, Page Down / [ previous,
+    // Home / End first / last, Esc leaves (when no region is selected).
+    if (tutorial.active) {
+      const step = { PageUp: 1, ']': 1, PageDown: -1, '[': -1 }[e.key];
+      if (step) { e.preventDefault(); stepTutorial(step); return; }
+      if (e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        gotoTutorialLayer(e.key === 'Home' ? 'first' : 'last');
+        return;
+      }
+      if (e.key === 'Escape' && !selectedRegionName) { e.preventDefault(); exitTutorial(); return; }
+    }
+
     if (!selectedRegionName) return;
 
     if (e.key === 'c' || e.key === 'C') {
@@ -1433,6 +1699,8 @@ async function init() {
   });
 
   document.getElementById('clear-button').addEventListener('click', () => {
+    exitTutorial();
+    tutorial.layer = null;
     currentCamera?.destroy();
     gl?.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
@@ -1500,7 +1768,10 @@ async function init() {
   });
 
   // Warm the item catalog in the background so icons are ready on first open.
-  loadItemCatalog();
+  loadItemCatalog().then(catalog => {
+    itemCatalog = catalog;
+    renderLayerMaterials(); // upgrade the layer card to icons if it's open
+  });
 
   document.getElementById('toggle-grid').addEventListener('change', (e) => {
     showGrid = e.target.checked;

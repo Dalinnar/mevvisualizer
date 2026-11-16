@@ -139,8 +139,13 @@ export function blockToItems(name, props = {}) {
 
 // Aggregates a StructureBuilder's placed blocks into a sorted material list.
 export function computeMaterials(builder) {
+  return computeMaterialsFromBlocks(builder.placedBlocks);
+}
+
+// Same as computeMaterials, for any list of placed blocks (e.g. one layer).
+export function computeMaterialsFromBlocks(blocks) {
   const totals = new Map();
-  for (const { entry } of builder.placedBlocks) {
+  for (const { entry } of blocks) {
     for (const [item, n] of blockToItems(entry.Name, entry.Properties || {})) {
       totals.set(item, (totals.get(item) || 0) + n);
     }
@@ -153,7 +158,7 @@ export function computeMaterials(builder) {
 // ---------------------------------------------------------------------------
 const titleCase = id => id.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
-function describeStacks(count, stackSize) {
+export function describeStacks(count, stackSize) {
   if (stackSize <= 1) return `${count} item${count === 1 ? '' : 's'}`;
   const stacks = Math.floor(count / stackSize);
   const rest = count % stackSize;
@@ -164,6 +169,10 @@ function describeStacks(count, stackSize) {
 }
 
 const shulkersFor = (count, stackSize) => Math.ceil(count / (stackSize * SHULKER_SLOTS));
+
+export function decorateMaterials(materials, catalog) {
+  return decorate(materials, catalog);
+}
 
 function decorate(materials, catalog) {
   return materials.map(m => {
@@ -299,7 +308,11 @@ function visibleRows() {
 }
 
 function iconStyle(row) {
-  const c = state.catalog;
+  return materialIconStyle(row, state.catalog);
+}
+
+// Inline CSS that shows a decorated row's icon from the item atlas, or null.
+export function materialIconStyle(row, c) {
   if (!c?.atlasUrl || row.atlasIndex == null) return null;
   const col = row.atlasIndex % c.columns;
   const rowIdx = Math.floor(row.atlasIndex / c.columns);

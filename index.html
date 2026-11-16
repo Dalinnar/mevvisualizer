@@ -167,6 +167,36 @@
               <button data-view="west" title="Orthographic view from the west side (-X)">West</button>
               <button data-view="iso" title="Isometric view">Iso</button>
             </div>
+            <div class="view-toolbar-group">
+              <button id="tutorial-toggle" title="Build it layer by layer: step through the layers one at a time">Layers</button>
+            </div>
+          </div>
+
+          <!-- ============ TUTORIAL MODE (layer by layer) ============ -->
+          <div id="tutorial-bar" class="tutorial-bar hidden">
+            <button type="button" id="tutorial-first" class="tutorial-btn" title="First layer (Home)">⏮</button>
+            <button type="button" id="tutorial-prev" class="tutorial-btn" title="Previous layer (Page Down or [)">◀ Prev</button>
+            <div class="tutorial-info">
+              <div class="tutorial-layer">Layer <b id="tutorial-layer-num">1</b> / <span id="tutorial-layer-total">1</span></div>
+              <div class="tutorial-y" id="tutorial-layer-y">Y 0</div>
+            </div>
+            <button type="button" id="tutorial-next" class="tutorial-btn" title="Next layer (Page Up or ])">Next ▶</button>
+            <button type="button" id="tutorial-last" class="tutorial-btn" title="Last layer (End)">⏭</button>
+            <button type="button" id="tutorial-follow" class="tutorial-btn active" title="Camera follows the current layer">🎥 Follow</button>
+            <select id="tutorial-ghost" title="How the layers below are shown">
+              <option value="previous">Ghost: previous layer</option>
+              <option value="all">Ghost: all layers below</option>
+              <option value="none">Ghost: off</option>
+            </select>
+            <button type="button" id="tutorial-exit" class="tutorial-btn tutorial-exit" title="Leave layer mode (Esc)">✕</button>
+          </div>
+          <div id="tutorial-materials" class="tutorial-materials hidden">
+            <button type="button" class="tutorial-materials-header" id="tutorial-materials-header" title="Show / hide">
+              <span>This layer</span>
+              <span class="tutorial-materials-summary" id="tutorial-materials-summary"></span>
+              <span class="tutorial-materials-caret">▾</span>
+            </button>
+            <div class="tutorial-materials-list" id="tutorial-materials-list"></div>
           </div>
 
           <!-- ============ SELECTION HUD (shown whenever a region is selected) ============ -->

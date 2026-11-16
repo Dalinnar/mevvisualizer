@@ -126,11 +126,16 @@ export class InteractiveCanvas {
 
   // Orthographic projection whose visible height at the orbit center matches
   // what the 70-degree perspective would show at the same viewDist.
+  //
+  // The near plane sits *behind* the eye: in ortho, distance doesn't change
+  // size, so zooming in (small viewDist) or flying with WASD can put the eye
+  // inside the structure. With a near plane in front of the eye, everything
+  // between it and the viewer was clipped away.
   getOrthoProjection(aspect) {
     const halfH = this.viewDist * Math.tan(this.fovY / 2);
     const halfW = halfH * aspect;
-    const far = this.viewDist + Math.max(500, this.depthRadius * 4);
-    return mat4.ortho(mat4.create(), -halfW, halfW, -halfH, halfH, 0.1, far);
+    const depth = Math.max(500, this.depthRadius * 4);
+    return mat4.ortho(mat4.create(), -halfW, halfW, -halfH, halfH, -depth, this.viewDist + depth);
   }
 
   _cancelViewAnimation() {
