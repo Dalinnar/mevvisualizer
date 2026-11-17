@@ -137,20 +137,26 @@ export function blockToItems(name, props = {}) {
   return [[id, count]];
 }
 
-// Aggregates a StructureBuilder's placed blocks into a sorted material list.
+// Aggregates a StructureBuilder's blocks into a sorted material list.
 export function computeMaterials(builder) {
-  return computeMaterialsFromBlocks(builder.placedBlocks);
+  return computeMaterialsFromCounts(builder.getPaletteCounts());
 }
 
-// Same as computeMaterials, for any list of placed blocks (e.g. one layer).
-export function computeMaterialsFromBlocks(blocks) {
+// Same as computeMaterials, for [[{ Name, Properties }, count], ...] pairs
+// (e.g. builder.getLayerCounts(y) for one layer).
+export function computeMaterialsFromCounts(pairs) {
   const totals = new Map();
-  for (const { entry } of blocks) {
+  for (const [entry, count] of pairs) {
     for (const [item, n] of blockToItems(entry.Name, entry.Properties || {})) {
-      totals.set(item, (totals.get(item) || 0) + n);
+      totals.set(item, (totals.get(item) || 0) + n * count);
     }
   }
   return [...totals].map(([id, count]) => ({ id, count })).sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
+}
+
+// For a list of placed blocks ({ entry }), e.g. from older callers.
+export function computeMaterialsFromBlocks(blocks) {
+  return computeMaterialsFromCounts(blocks.map(({ entry }) => [entry, 1]));
 }
 
 // ---------------------------------------------------------------------------

@@ -60,7 +60,9 @@ export class InteractiveCanvas {
     
     this._onWheel = e => {
       e.preventDefault();
-      this.viewDist += e.deltaY / 100;
+      // Proportional zoom, so it stays usable from a 3x3 build to a huge one
+      // (about 10% per mouse-wheel notch).
+      this.viewDist *= Math.exp(Math.max(-500, Math.min(500, e.deltaY)) * 0.001);
       this.redraw();
     };
     
@@ -178,7 +180,8 @@ export class InteractiveCanvas {
     this.viewDist = Math.max(1, this.viewDist);
 
     const movement = vec3.create();
-    const speed = this.movementSpeed;
+    // Faster when zoomed out, so flying across a big build doesn't take ages.
+    const speed = Math.max(this.movementSpeed, this.viewDist * 0.012);
 
     if (this.keys['w']) movement[2] -= speed;
     if (this.keys['s']) movement[2] += speed;

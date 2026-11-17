@@ -85,9 +85,11 @@ mevrenderer.renderLitematicImage({
   buffer,            // ArrayBuffer|Uint8Array — an already-loaded .litematic
   width = 800,
   height = 600,
-  xRotation = 0.6,   // camera pitch, radians
-  yRotation = 0.8,   // camera yaw, radians — distance is always auto-fit,
-                     // so the whole structure stays in frame at any angle
+  projection = 'orthographic', // or 'perspective'
+  xRotation = 0.6155,  // camera pitch, radians (isometric: atan(1/√2))
+  yRotation = -0.7854, // camera yaw, radians (isometric: -π/4) — framing is
+                       // always auto-fit and centered, at any angle
+  padding = 0.06,    // empty margin around the build, fraction of image size
   background = '#1a1a1a', // CSS color, or null for a transparent PNG
   asBlob = false,    // resolve a Blob instead of a data URL
   onProgress,        // ({stage, percent}) — fires once per page load

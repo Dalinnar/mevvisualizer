@@ -2,9 +2,10 @@ import { InteractiveCanvas } from './camera.js';
 import { create3DBlocks } from './region.js';
 import { loadBlockData, ResourceLoader } from './resources.js';
 import { StructureBuilder } from './structure.js';
-import { openMaterialsDialog, loadItemCatalog, computeMaterialsFromBlocks, decorateMaterials, materialIconStyle, describeStacks } from './materials.js';
+import { openMaterialsDialog, loadItemCatalog, computeMaterialsFromCounts, decorateMaterials, materialIconStyle, describeStacks } from './materials.js';
 import { DoubleRangeSlider } from './slider.js';
-const { StructureRenderer, Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
+import { FastStructureRenderer } from './chunkMesher.js';
+const { Mesh, Quad, Vertex, Vector, ShaderProgram } = deepslate;
 const { mat4: mat4Pick, vec4: vec4Pick } = glMatrix;
 import { localToWorld, nbtNum, cloneRegionWithPosition } from './validate.js';
 import { planClusters, stackClusters, getRegionWorlds, encodeStackConfig, decodeStackConfig } from './manualStack.js';
@@ -733,9 +734,9 @@ async function init() {
 
   function rebuildWithYRange(minY, maxY) {
     if (!currentBuilder || tutorial.active) return;
-    currentStructure = currentBuilder.buildStructure(minY, maxY);
     if (currentRenderer) {
-      currentRenderer.setStructure(currentStructure);
+      // Only the chunks the new range cuts through get rebuilt.
+      currentRenderer.mainView.setYRange(minY, maxY);
       currentCamera?.redraw();
     }
   }
@@ -743,7 +744,7 @@ async function init() {
   // ── Tutorial mode (layer by layer) ─────────────────────────────────────────
   // Shows one Y layer at a time so people can build along: the current layer
   // renders normally, the layer(s) below it as a translucent ghost (a second
-  // StructureRenderer drawn with constant-alpha blending), and a card lists
+  // second Y-filtered view of the same meshes, drawn with constant-alpha blending), and a card lists
   // the materials that layer needs. Layers are world Y values of the blocks
   // currently on screen, so it follows stacking and region edits too.
   const tutorial = {
@@ -753,7 +754,8 @@ async function init() {
     follow: true,          // camera moves up/down with the current layer
     followedY: null,       // local Y the camera was last moved to (null = not yet)
   };
-  let ghostRenderer = null, ghostVisible = false, layerOutlineMesh = null, itemCatalog = null,
+  // The ghost is a second Y-filtered view of the current renderer's meshes.
+  let ghostView = null, ghostVisible = false, layerOutlineMesh = null, itemCatalog = null,
     cameraFollowAnim = null;
 
   // Smoothly moves the camera's orbit center to local height `targetY`,
@@ -791,20 +793,9 @@ async function init() {
   // Where an in-flight follow animation is heading, so quick repeated steps
   // add up instead of starting from a half-way position.
   let currentTargetY = 0;
-  // Placed blocks grouped by world Y, per builder (built on first use).
-  const layerBlocksCache = new WeakMap();
-
-  function blocksAtLayer(y) {
-    let byY = layerBlocksCache.get(currentBuilder);
-    if (!byY) {
-      byY = new Map();
-      for (const b of currentBuilder.placedBlocks) {
-        if (!byY.has(b.wy)) byY.set(b.wy, []);
-        byY.get(b.wy).push(b);
-      }
-      layerBlocksCache.set(currentBuilder, byY);
-    }
-    return byY.get(y) || [];
+  // Block-state counts of one world Y layer of the current builder.
+  function countsAtLayer(y) {
+    return currentBuilder.getLayerCounts(y);
   }
 
   function enterTutorial() {
@@ -827,9 +818,13 @@ async function init() {
     document.getElementById('tutorial-bar').classList.add('hidden');
     document.getElementById('tutorial-materials').classList.add('hidden');
     document.getElementById('tutorial-toggle').classList.remove('active');
+    ghostView?.dispose();
     // Back to whatever the Y slider was showing.
     if (currentBuilder && slider) rebuildWithYRange(slider.currentMin, slider.currentMax);
-    else currentCamera?.redraw();
+    else {
+      currentRenderer?.mainView.setYRange(-Infinity, Infinity);
+      currentCamera?.redraw();
+    }
   }
 
   function stepTutorial(delta) {
@@ -852,21 +847,13 @@ async function init() {
     const { minY, maxY, minX, maxX, minZ, maxZ } = currentBuilder.getActualBounds();
     const y = tutorial.layer = Math.max(minY, Math.min(maxY, tutorial.layer ?? minY));
 
-    currentStructure = currentBuilder.buildStructure(y, y);
-    currentRenderer.setStructure(currentStructure);
+    currentRenderer.mainView.setYRange(y, y);
 
     ghostVisible = tutorial.ghostMode !== 'none' && y > minY;
     if (ghostVisible) {
       const from = tutorial.ghostMode === 'all' ? -Infinity : y - 1;
-      const ghostStructure = currentBuilder.buildStructure(from, y - 1);
-      if (!ghostRenderer) {
-        ghostRenderer = new StructureRenderer(gl, ghostStructure, resources, {
-          useInvisibleBlockBuffer: false, chunkSize: 16,
-        });
-        patchPrepareDraw(ghostRenderer);
-      } else {
-        ghostRenderer.setStructure(ghostStructure);
-      }
+      if (!ghostView || ghostView.mesher !== currentRenderer.mesher) ghostView = currentRenderer.createView();
+      ghostView.setYRange(from, y - 1);
     }
 
     const ly = y - minY;
@@ -889,7 +876,7 @@ async function init() {
   // (same block -> item rules and icons as the full material list).
   function renderLayerMaterials() {
     if (!tutorial.active || !currentBuilder) return;
-    const rows = decorateMaterials(computeMaterialsFromBlocks(blocksAtLayer(tutorial.layer)), itemCatalog);
+    const rows = decorateMaterials(computeMaterialsFromCounts(countsAtLayer(tutorial.layer)), itemCatalog);
     const total = rows.reduce((sum, r) => sum + r.count, 0);
     document.getElementById('tutorial-materials-summary').textContent = rows.length
       ? `${rows.length} type${rows.length === 1 ? '' : 's'} · ${total.toLocaleString()} item${total === 1 ? '' : 's'}`
@@ -1283,6 +1270,19 @@ async function init() {
         renderer.setViewport(0, 0, c.width, c.height); // also recomputes projMatrix
         renderer._vpW = c.width;
         renderer._vpH = c.height;
+        renderer._far = null; // setViewport reset projMatrix to deepslate's
+      }
+      // deepslate's perspective has a fixed 500-block far plane, which cut
+      // big builds in half; stretch it to the structure's size and zoom.
+      // Stored on the renderer so click-picking unprojects with the same one.
+      if (currentCamera) {
+        const far = Math.max(500, currentCamera.viewDist + currentCamera.depthRadius * 2 + 50);
+        if (far !== renderer._far || canvasAspect() !== renderer._aspect) {
+          renderer._far = far;
+          renderer._aspect = canvasAspect();
+          renderer.projMatrix = mat4Pick.perspective(mat4Pick.create(), 70 * Math.PI / 180,
+            renderer._aspect, Math.max(0.1, far / 50000), far);
+        }
       }
       basePrepareDraw(view);
       const cam = currentCamera;
@@ -1293,21 +1293,38 @@ async function init() {
     };
   }
 
+  // Incremented by every buildAndRender call, so an older build that is
+  // still decoding regions (e.g. the stack count changed again meanwhile)
+  // stops instead of replacing the newer result.
+  let buildGeneration = 0;
+  // True from a build until the first frame with every chunk meshed.
+  let pendingReadySignal = false;
+  const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0));
+
   async function buildAndRender(builder, regions, w, h, d) {
+    const generation = ++buildGeneration;
     const regionNames = Array.from(regions.keys());
     for (let i = 0; i < regionNames.length; i++) {
-      progressDisplay.textContent = `Processing region ${i + 1}/${regionNames.length}...`;
-      await new Promise(resolve => setTimeout(resolve, 0));
+      const label = `Processing region ${i + 1}/${regionNames.length}`;
+      progressDisplay.textContent = `${label}...`;
+      await yieldToBrowser();
+      if (generation !== buildGeneration) return;
       const regionData = create3DBlocks(regions.get(regionNames[i]));
-      builder.addRegionBlocks(regionNames[i], regionData);
-      if (regionData.blockIds?.length > 100000) regionData.blockIds = null;
+      // Decode in time slices so huge regions don't freeze the page.
+      let sliceStart = performance.now();
+      for (const done of builder.addRegionBlocksSteps(regionNames[i], regionData)) {
+        if (performance.now() - sliceStart > 30) {
+          progressDisplay.textContent = `${label}... ${Math.round(done * 100)}%`;
+          await yieldToBrowser();
+          if (generation !== buildGeneration) return;
+          sliceStart = performance.now();
+        }
+      }
     }
 
-    progressDisplay.textContent = 'Building structure...';
-    const structure = builder.buildStructure();
-    const renderer = new StructureRenderer(gl, structure, resources, {
-      useInvisibleBlockBuffer: false, chunkSize: 16
-    });
+    progressDisplay.textContent = `Building meshes... (${builder.blockCount.toLocaleString()} blocks)`;
+    // Meshes are built progressively while drawing (see chunkMesher.js).
+    const renderer = new FastStructureRenderer(gl, builder, resources);
 
     // Orthographic support: deepslate hard-codes a perspective projection, so
     // after its prepareDraw() has uploaded that one, overwrite the active
@@ -1336,8 +1353,12 @@ async function init() {
     } : null;
 
     currentCamera?.destroy();
-    Object.assign({ currentBuilder: builder, currentStructure: structure, currentRenderer: renderer },
-      (currentBuilder = builder, currentStructure = structure, currentRenderer = renderer, {}));
+    // Free the previous structure's GPU buffers (stacking rebuilds often).
+    currentRenderer?.dispose?.();
+    ghostView = null;
+    currentBuilder = builder;
+    currentStructure = null;
+    currentRenderer = renderer;
 
     // Built once here (not inside the render callback), so region boxes are
     // reused across every frame instead of being rebuilt each render.
@@ -1347,18 +1368,38 @@ async function init() {
     updateSelectionHud(null);
 
     currentCamera = new InteractiveCanvas(canvas, view => {
-      renderer.drawStructure(view);
-      if (tutorial.active && ghostVisible && ghostRenderer) {
+      renderer.setFocus(currentCamera ? currentCamera.center : center);
+      let { missing, total } = renderer.drawStructure(view);
+      if (tutorial.active && ghostVisible && ghostView) {
         // Layers below, semi-translucent: a depth-only pass first so only the
         // nearest ghost surface shows, then a color pass that mixes it with
         // whatever is behind it at a fixed opacity.
         gl.colorMask(false, false, false, false);
-        ghostRenderer.drawStructure(view);
+        const ghost = renderer.drawStructure(view, ghostView);
         gl.colorMask(true, true, true, true);
         gl.blendColor(0, 0, 0, GHOST_ALPHA);
         gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
-        ghostRenderer.drawStructure(view);
+        renderer.drawStructure(view, ghostView);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        missing += ghost.missing;
+        total += ghost.total;
+      }
+      // Keep drawing frames until every chunk in view has been meshed.
+      if (missing > 0) {
+        progressDisplay.style.display = 'block';
+        progressDisplay.textContent = `Building meshes... ${Math.floor(100 * (total - missing) / Math.max(1, total))}%`;
+        currentCamera?.redraw();
+      } else if (pendingReadySignal) {
+        pendingReadySignal = false;
+        progressDisplay.style.display = 'none';
+        // Signal that a frame reflecting the current structure/camera is
+        // fully on screen (see docs/headless-render.md).
+        requestAnimationFrame(() => {
+          window.mevRendererReady = true;
+          window.dispatchEvent(new CustomEvent('mev-render-complete'));
+        });
+      } else if (progressDisplay.style.display !== 'none' && progressDisplay.textContent.startsWith('Building meshes')) {
+        progressDisplay.style.display = 'none';
       }
       if (showGrid) {
         renderer.drawGrid(view);
@@ -1428,22 +1469,16 @@ async function init() {
     }
 
     document.getElementById('slider-container').classList.add('active');
-    renderer.setStructure(structure);
-    progressDisplay.style.display = 'none';
 
     // Stay in layer mode across rebuilds (stacking changes, region edits),
     // on the same Y if it still exists. ?tutorial=true opens in layer mode.
     if (tutorial.active) applyTutorialLayer();
     else if (tutorialFromUrl) { tutorialFromUrl = false; enterTutorial(); }
 
-    // Signal that a frame reflecting the current structure/camera is on
-    // screen. Deferred one frame so the InteractiveCanvas's own initial
-    // redraw() (scheduled via requestAnimationFrame in its constructor)
-    // has actually run and the canvas isn't blank/stale when read.
-    requestAnimationFrame(() => {
-      window.mevRendererReady = true;
-      window.dispatchEvent(new CustomEvent('mev-render-complete'));
-    });
+    // mevRendererReady / 'mev-render-complete' fire from the render callback
+    // once the first frame with every chunk meshed is on screen.
+    pendingReadySignal = true;
+    currentCamera.redraw();
   }
 
   // ── Main render entry point ────────────────────────────────────────────────
@@ -1702,6 +1737,11 @@ async function init() {
     exitTutorial();
     tutorial.layer = null;
     currentCamera?.destroy();
+    buildGeneration++; // abandon a build that is still decoding
+    pendingReadySignal = false;
+    progressDisplay.style.display = 'none';
+    currentRenderer?.dispose?.();
+    ghostView = null;
     gl?.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     currentStructure = currentRenderer = currentCamera = currentBuilder = null;
     originalBuffer = lastStackedNbt = null;

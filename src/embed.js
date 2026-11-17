@@ -28,6 +28,7 @@
 import { create3DBlocks } from './region.js';
 import { loadBlockData, ResourceLoader, setBlocklistUrl } from './resources.js';
 import { StructureBuilder } from './structure.js';
+import { FastStructureRenderer } from './chunkMesher.js';
 
 // When this file is loaded natively as an ES module, resources.js already
 // resolves blocklist.json's URL itself (via import.meta.url). When it's
@@ -49,8 +50,7 @@ if (typeof document !== 'undefined' && document.currentScript && document.curren
 
 export { setBlocklistUrl };
 
-const { StructureRenderer } = deepslate;
-const { mat4 } = glMatrix;
+const { mat4, vec3 } = glMatrix;
 
 // The block-definition/model/texture-atlas set is identical for every
 // litematic, so it's loaded once per page and reused across every
@@ -75,16 +75,40 @@ function getEnclosing(root) {
   return { w: n('x'), h: n('y'), d: n('z') };
 }
 
-// Same bounding-sphere fit as main.js's computeFitViewDist() (kept as a
-// separate copy here so this file has no dependency on main.js/its DOM
-// wiring) — see that function's comment for why a sphere fit is used.
-function computeFitViewDist(bounds, width, height, marginFactor = 1.1) {
-  const dx = bounds.maxX - bounds.minX;
-  const dy = bounds.maxY - bounds.minY;
-  const dz = bounds.maxZ - bounds.minZ;
-  const radius = 0.5 * Math.hypot(dx, dy, dz);
-  if (radius <= 0 || !Number.isFinite(radius)) return 4;
+// The mesher (chunkMesher.js) draws every block relative to the bounds' min
+// corner, so the structure occupies [0, size] on each axis in render space —
+// not [min, max]. Bounds' max values are inclusive block indices, hence +1.
+function localBox(bounds) {
+  return [
+    bounds.maxX - bounds.minX + 1,
+    bounds.maxY - bounds.minY + 1,
+    bounds.maxZ - bounds.minZ + 1,
+  ];
+}
 
+// Half-extents (in view-space units) of the box's 8 corners after rotating
+// them by the camera's pitch/yaw, measured from the box center. Since a box
+// is centrally symmetric, its projection is too — so aiming at the box
+// center *and* fitting these extents frames it exactly, with equal margins.
+function projectedHalfExtents(size, xRotation, yRotation) {
+  const rot = mat4.create();
+  mat4.rotate(rot, rot, xRotation, [1, 0, 0]);
+  mat4.rotate(rot, rot, yRotation, [0, 1, 0]);
+  let hx = 0, hy = 0, hz = 0;
+  const v = vec3.create();
+  for (const sx of [-0.5, 0.5]) for (const sy of [-0.5, 0.5]) for (const sz of [-0.5, 0.5]) {
+    vec3.transformMat4(v, [sx * size[0], sy * size[1], sz * size[2]], rot);
+    hx = Math.max(hx, Math.abs(v[0]));
+    hy = Math.max(hy, Math.abs(v[1]));
+    hz = Math.max(hz, Math.abs(v[2]));
+  }
+  return { hx, hy, hz };
+}
+
+// Perspective fallback: bounding-sphere fit (same idea as main.js's
+// computeFitViewDist()), so the whole build stays in frame.
+function computeFitViewDist(radius, width, height, marginFactor) {
+  if (radius <= 0 || !Number.isFinite(radius)) return 4;
   const aspect = width / height;
   const vFov = 70 * Math.PI / 180;
   const hFov = 2 * Math.atan(aspect * Math.tan(vFov / 2));
@@ -133,10 +157,16 @@ function parseCssColor(css) {
  *   type=file>) than have this function fetch a URL.
  * @param {number} [options.width=800]
  * @param {number} [options.height=600]
- * @param {number} [options.xRotation=0.6] - camera pitch, in radians.
- * @param {number} [options.yRotation=0.8] - camera yaw, in radians. The
- *   camera *distance* is always auto-fit from the structure's bounding
- *   sphere, so the whole schematic stays in frame at any angle you pick.
+ * @param {'orthographic'|'perspective'} [options.projection='orthographic']
+ *   - orthographic gives a true isometric look with a tight fit; perspective
+ *   uses a 70° FOV like the main viewer.
+ * @param {number} [options.xRotation] - camera pitch, in radians. Defaults
+ *   to the isometric pitch, atan(1/√2) ≈ 35.26°.
+ * @param {number} [options.yRotation] - camera yaw, in radians. Defaults to
+ *   -π/4 (the main viewer's "iso" preset). The framing is always auto-fit
+ *   and centered on the structure, at any angle you pick.
+ * @param {number} [options.padding=0.06] - empty margin around the build,
+ *   as a fraction of the image size.
  * @param {string|null} [options.background='#1a1a1a'] - CSS color cleared
  *   behind the structure, or `null` for a transparent PNG.
  * @param {boolean} [options.asBlob=false] - resolve with a Blob instead of
@@ -150,7 +180,9 @@ export async function renderLitematicImage(options = {}) {
   const {
     url, buffer,
     width = 800, height = 600,
-    xRotation = 0.6, yRotation = 0.8,
+    projection = 'orthographic',
+    xRotation = Math.atan(1 / Math.SQRT2), yRotation = -Math.PI / 4,
+    padding = 0.06,
     background = '#1a1a1a',
     asBlob = false,
     onProgress = null,
@@ -175,9 +207,15 @@ export async function renderLitematicImage(options = {}) {
   const builder = new StructureBuilder(w, h, d);
   const regions = root.get('Regions');
   for (const name of regions.keys()) {
-    builder.addRegionBlocks(name, create3DBlocks(regions.get(name)));
+    // Decoded in time slices so a huge schematic doesn't freeze the page.
+    let sliceStart = performance.now();
+    for (const _ of builder.addRegionBlocksSteps(name, create3DBlocks(regions.get(name)))) {
+      if (performance.now() - sliceStart > 30) {
+        await new Promise(r => setTimeout(r, 0));
+        sliceStart = performance.now();
+      }
+    }
   }
-  const structure = builder.buildStructure();
 
   // An offscreen canvas, never appended visibly — but it *is* briefly
   // attached (off-screen, via position/left rather than display:none) so
@@ -207,18 +245,39 @@ export async function renderLitematicImage(options = {}) {
     }
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    const renderer = new StructureRenderer(gl, structure, resources, {
-      useInvisibleBlockBuffer: false, chunkSize: 16,
-    });
+    const renderer = new FastStructureRenderer(gl, builder, resources);
 
-    const bounds = builder.getActualBounds();
-    const center = ['x', 'y', 'z'].map(
-      k => (bounds[`min${k.toUpperCase()}`] + bounds[`max${k.toUpperCase()}`]) / 2
-    );
-    const viewDist = computeFitViewDist(bounds, width, height);
-    const view = buildViewMatrix(center, viewDist, xRotation, yRotation);
+    const size = localBox(builder.getActualBounds());
+    const center = size.map(v => v / 2);
+    const radius = 0.5 * Math.hypot(...size);
+    const aspect = width / height;
+    const margin = 1 / Math.max(0.05, 1 - 2 * padding);
 
-    renderer.drawStructure(view);
+    let view;
+    if (projection === 'perspective') {
+      const viewDist = computeFitViewDist(radius, width, height, margin);
+      view = buildViewMatrix(center, viewDist, xRotation, yRotation);
+      // deepslate's perspective stops at 500 blocks; fit the far plane to the build.
+      const far = Math.max(500, viewDist + radius * 2 + 50);
+      renderer.projMatrix = mat4.perspective(mat4.create(), 70 * Math.PI / 180, aspect, Math.max(0.1, far / 50000), far);
+    } else {
+      const { hx, hy, hz } = projectedHalfExtents(size, xRotation, yRotation);
+      const halfH = Math.max(hy, hx / aspect, 0.5) * margin;
+      const halfW = halfH * aspect;
+      const viewDist = hz + 10;
+      view = buildViewMatrix(center, viewDist, xRotation, yRotation);
+      renderer.projMatrix = mat4.ortho(mat4.create(), -halfW, halfW, -halfH, halfH, 0.1, viewDist + hz + 10);
+    }
+
+    try {
+      renderer.setFocus(center);
+      await renderer.buildAll();
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      renderer.drawStructure(view);
+    } finally {
+      // The canvas is thrown away; free its GPU buffers right away.
+      renderer.dispose();
+    }
 
     return await new Promise((resolve, reject) => {
       if (asBlob) {

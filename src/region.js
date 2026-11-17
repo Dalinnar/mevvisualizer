@@ -1,59 +1,75 @@
-export function unpackBlockStates(regionData, paletteSize, width, height, depth) {
-  const nbits = Math.max(2, Math.ceil(Math.log2(paletteSize)));
-  const mask = (1 << nbits) - 1;
-  const totalBlocks = width * height * depth;
-  const blockIds =  paletteSize <= 256 ? new Uint8Array(totalBlocks) : paletteSize <= 65536 ? new Uint16Array(totalBlocks) : new Uint32Array(totalBlocks);
-  const y_shift = Math.abs(width * depth);
-  const z_shift = Math.abs(width);
-  let idx = 0;
+// Reads one litematic region into a compact, streamable form.
+//
+// The packed BlockStates long array is copied once into a flat Int32Array of
+// 32-bit words (low word first, so word 2k / 2k+1 = low / high half of long
+// k). Block ids are then decoded on the fly by index, so a huge region never
+// needs a per-cell id array (which for e.g. 1000x256x1000 would be 256 MB).
 
-  for (let y = 0; y < height; y++) {
-    for (let z = 0; z < depth; z++) {
-      for (let x = 0; x < width; x++) {
-        const index = y * y_shift + z * z_shift + x;
-        const start_offset = index * nbits;
-        const start_arr_index = start_offset >>> 5;
-        const end_arr_index = ((index + 1) * nbits - 1) >>> 5;
-        const start_bit_offset = start_offset & 31;
-        const half_ind = start_arr_index >>> 1;
+function readNumber(tag) {
+  return Number(tag?.value ?? tag);
+}
 
-        let blockStart, blockEnd;
-        if ((start_arr_index & 1) === 0) {
-          blockStart = regionData[half_ind]?.[1] ?? 0;
-          blockEnd   = regionData[half_ind]?.[0] ?? 0;
-        } else {
-          blockStart = regionData[half_ind]?.[0] ?? 0;
-          blockEnd   = regionData[half_ind + 1]?.[1] ?? 0;
-        }
-
-        let value;
-        if (start_arr_index === end_arr_index) {
-          value = (blockStart >>> start_bit_offset) & mask;
-        } else {
-          const end_offset = 32 - start_bit_offset;
-          value = ((blockStart >>> start_bit_offset) | (blockEnd << end_offset)) & mask;
-        }
-        blockIds[idx++] = value;
-      }
+// Converts the NBT long array into the flat word array described above.
+function readPackedWords(raw) {
+  if (!raw) return new Int32Array(0);
+  const n = raw.length;
+  const words = new Int32Array(n * 2);
+  const items = raw.items; // deepslate NbtLongArray keeps NbtLong items here
+  for (let i = 0; i < n; i++) {
+    const entry = items ? items[i] : raw.get(i);
+    let pair = entry?.value ?? entry;
+    if (typeof pair === 'string' && pair.includes(',')) pair = pair.split(',').map(v => Number(v.trim()));
+    if (Array.isArray(pair)) {
+      words[2 * i] = pair[1] | 0;     // low 32 bits
+      words[2 * i + 1] = pair[0] | 0; // high 32 bits
+    } else {
+      words[2 * i] = Number(pair) | 0;
     }
   }
-  return blockIds;
+  return words;
+}
+
+export function bitsForPalette(paletteSize) {
+  return Math.max(2, Math.ceil(Math.log2(Math.max(1, paletteSize))));
+}
+
+// Palette index of cell `index` (y * w * d + z * w + x) in a packed word array.
+export function readPackedId(words, nbits, mask, index) {
+  const bit = index * nbits;
+  const w = bit >>> 5;
+  const off = bit & 31;
+  let v = words[w] >>> off;
+  if (off + nbits > 32) v |= words[w + 1] << (32 - off);
+  return v & mask;
+}
+
+// Kept for compatibility: decodes a whole region into a typed id array.
+// Prefer create3DBlocks(), which never materialises this array.
+export function unpackBlockStates(regionData, paletteSize, width, height, depth) {
+  const words = new Int32Array(regionData.length * 2);
+  regionData.forEach((pair, i) => { words[2 * i] = pair[1] | 0; words[2 * i + 1] = pair[0] | 0; });
+  const nbits = bitsForPalette(paletteSize);
+  const mask = (1 << nbits) - 1;
+  const total = width * height * depth;
+  const ids = paletteSize <= 256 ? new Uint8Array(total) : paletteSize <= 65536 ? new Uint16Array(total) : new Uint32Array(total);
+  for (let i = 0; i < total; i++) ids[i] = readPackedId(words, nbits, mask, i);
+  return ids;
 }
 
 export function create3DBlocks(region) {
   const size = region.get("Size");
-  const sx = Number(size.get("x").value ?? size.get("x"));
-  const sy = Number(size.get("y").value ?? size.get("y"));
-  const sz = Number(size.get("z").value ?? size.get("z"));
+  const sx = readNumber(size.get("x"));
+  const sy = readNumber(size.get("y"));
+  const sz = readNumber(size.get("z"));
 
   const width = Math.abs(sx);
   const height = Math.abs(sy);
   const depth = Math.abs(sz);
 
   const pos = region.get("Position");
-  const posX = Number(pos.get("x").value ?? pos.get("x"));
-  const posY = Number(pos.get("y").value ?? pos.get("y"));
-  const posZ = Number(pos.get("z").value ?? pos.get("z"));
+  const posX = readNumber(pos.get("x"));
+  const posY = readNumber(pos.get("y"));
+  const posZ = readNumber(pos.get("z"));
 
   const paletteTag = region.get("BlockStatePalette");
   const palette = [];
@@ -71,31 +87,18 @@ export function create3DBlocks(region) {
     palette.push({ Name: name, Properties: Object.keys(props).length ? props : null });
   }
 
-  const raw = region.get("BlockStates");
-  const regionData = [];
-  if (raw) {
-    for (let i = 0; i < raw.length; i++) {
-      const entry = raw.get(i);
-      let val = entry.value ?? entry;
-      if (typeof val === "string" && val.includes(",")) {
-        const parts = val.split(",").map(v => Number(v.trim()));
-        regionData.push(parts);
-      } else if (Array.isArray(val)) {
-        regionData.push(val);
-      } else {
-        regionData.push([Number(val), 0]);
-      }
-    }
-  }
+  const words = readPackedWords(region.get("BlockStates"));
+  const nbits = bitsForPalette(palette.length);
 
-  const blockIds = unpackBlockStates(regionData, palette.length, width, height, depth);
+  // World position of the region's local (0,0,0) corner; negative sizes
+  // grow towards -axis from Position.
+  const originX = posX + (sx >= 0 ? 0 : sx + 1);
+  const originY = posY + (sy >= 0 ? 0 : sy + 1);
+  const originZ = posZ + (sz >= 0 ? 0 : sz + 1);
 
   function localToWorld(lx, ly, lz) {
-    const ox = sx >= 0 ? lx : lx + sx + 1;
-    const oy = sy >= 0 ? ly : ly + sy + 1;
-    const oz = sz >= 0 ? lz : lz + sz + 1;
-    return [posX + ox, posY + oy, posZ + oz];
+    return [originX + lx, originY + ly, originZ + lz];
   }
 
-  return { blockIds, palette, width, height, depth, localToWorld };
+  return { palette, width, height, depth, words, nbits, origin: [originX, originY, originZ], localToWorld };
 }
